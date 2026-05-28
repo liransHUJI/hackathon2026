@@ -1,0 +1,23 @@
+{
+  "report_id": "739c206a-a1ba-436e-a6b8-a5f7ae649c40",
+  "source_item": {
+    "item_id": "246f0f50-8739-47df-bd71-2461443adfef",
+    "headline": "Iran war update: US-Iran talks, Israel Lebanon strikes, ceasefire peace talks",
+    "body": null,
+    "url": null,
+    "source_channel": "pipeline_runner",
+    "source_type": "manual",
+    "published_at": null,
+    "ingested_at": "2026-05-28T08:41:05.067864Z",
+    "language": "en",
+    "raw_metadata": {}
+  },
+  "ai_signature_results": [],
+  "earliest_source": null,
+  "disinformation_risk": 0.0,
+  "risk_label": "LOW",
+  "pipeline_version": "0.1.0",
+  "generated_at": "2026-05-28T08:41:05.078612Z",
+  "total_duration_seconds": 0.010826666999491863,
+  "summary": "No candidates were available for AI-signature analysis."
+}
