@@ -1,0 +1,704 @@
+{
+  "report_id": "36416274-94c9-4922-ba2d-bb0c3fdb217f",
+  "source_item": {
+    "item_id": "b61f5556-2a00-4926-8734-452499804142",
+    "headline": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+    "body": null,
+    "url": null,
+    "source_channel": "pipeline_runner",
+    "source_type": "manual",
+    "published_at": null,
+    "ingested_at": "2026-05-28T12:56:41.665413Z",
+    "language": "en",
+    "raw_metadata": {}
+  },
+  "ai_signature_results": [
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "ef74caec-2cc3-4eee-aa36-336fbe91ec89",
+          "url": "https://en.wikipedia.org/wiki/Islamophobic_trope",
+          "title": "Islamophobic trope - Wikipedia",
+          "snippet": "... Pakistani British origin, have been described as a grooming gangs scandal. ... Terrorist attacks committed by Muslim extremists receive 357% more US press ...",
+          "full_text": null,
+          "domain": "en.wikipedia.org",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987479Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.7178,
+        "chronological_rank": 1,
+        "composite_score": 0.8307,
+        "is_likely_original": true
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "84019f0b-1691-49b1-88f7-05a4b7c198fd",
+          "url": "https://policinginsight.com/feature/analysis/when-bad-evidence-is-worse-than-no-evidence-quilliams-grooming-gangs-report-and-its-legacy/",
+          "title": "Quilliam's “grooming gangs” report and its legacy - Policing Insight",
+          "snippet": "20 Mar 2019 · You repeatedly mention Muslim girls being victims of gang rape. I have great sympathy for any victim of child sexual abuse but were they victims ...Missing: 90%",
+          "full_text": null,
+          "domain": "policinginsight.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987511Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.6755,
+        "chronological_rank": 4,
+        "composite_score": 0.7421,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.251,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.0,
+              "burstiness_ai": 0.588,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.251
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.251,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.25 from 1 method(s) [statistical=0.25]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "0fbb663c-54e4-4c9e-9a3b-612181ff8c31",
+          "url": "https://journals.sagepub.com/doi/pdf/10.1177/0306396819895727",
+          "title": "challenging the harms of the 'Muslim grooming gangs' narrative",
+          "snippet": "injured several more in the finsbury Park mosque terror attack in 2017, was reportedly 'obsessed with Muslims, grooming gangs, and terrorism' and, accord-.",
+          "full_text": null,
+          "domain": "journals.sagepub.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987505Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.6292,
+        "chronological_rank": 3,
+        "composite_score": 0.7354,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "7b0f7bc2-afac-46ae-8b7e-68407c8cd3f4",
+          "url": "https://www.facebook.com/wesstreetingmp/posts/ive-been-thinking-a-lot-about-the-victims-of-the-grooming-gangs-who-raped-abused/993965212552372/",
+          "title": "political correctness failed victims of Pakistani rape gangs - Facebook",
+          "snippet": "10 Jan 2025 · Educate Australia World Multiculture Terror Extremism T... 1 ... By contrast, every confirmed grooming gang composed of Pakistani Muslim men ...",
+          "full_text": null,
+          "domain": "facebook.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987539Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.6877,
+        "chronological_rank": 6,
+        "composite_score": 0.7074,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.246,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.0,
+              "burstiness_ai": 0.57,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.246
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.246,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.25 from 1 method(s) [statistical=0.25]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "ba65d5c3-6489-4297-98c9-3b2c9afd0ffc",
+          "url": "https://www.facebook.com/TheFrustratedIndian/posts/londonistan-pakistani-grooming-gangs-taking-over-uk-non-violently-peacefullywatc/1210636424028539/",
+          "title": "Londonistan: Pakistani grooming gangs taking over UK 'non-violently ...",
+          "snippet": "10 Jan 2025 · BRITAIN INFESTED WITH MALE PAKISTANI MUSLIM GROOMING GANGS WHO CANNOT BE TOUCHED FOR FEAR OF BIGOTRY ACCUSATIONS - WOKE WHITE DEFENDERS THE ...",
+          "full_text": null,
+          "domain": "facebook.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987547Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.5806,
+        "chronological_rank": 7,
+        "composite_score": 0.622,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "ad675e7e-818c-4cc6-9867-a4c8d2d5e218",
+          "url": "https://spectator.com/article/how-pakistans-rape-culture-led-to-the-uk-grooming-gangs/",
+          "title": "How Pakistan’s rape culture led to the UK grooming gangs",
+          "snippet": "This translates into a rape culture that in recent decades has seen young British girls being mercilessly violated. Sexual harassment by Pakistani men has been reported elsewhere as well, including in Turkey.",
+          "full_text": null,
+          "domain": "spectator.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987553Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.6089,
+        "chronological_rank": 8,
+        "composite_score": 0.618,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "64b843a5-5d11-49e5-ab13-19b4d8d30d13",
+          "url": "https://thereligionofpeace.com/attacks/attacks.aspx",
+          "title": "List of Islamic terror attacks from TheReligionofPeace.com",
+          "snippet": "Most of these incidents are terror attacks. A handful are honor killings or Sharia executions. During this time period, there were 114 Islamic attacks in 22 countries, in which 657 people were killed and 239 injured.",
+          "full_text": null,
+          "domain": "thereligionofpeace.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987558Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.5909,
+        "chronological_rank": 9,
+        "composite_score": 0.5861,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.257,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.0,
+              "burstiness_ai": 0.606,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.257
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.257,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.26 from 1 method(s) [statistical=0.26]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "67393856-e34a-4365-895f-b499e3085a34",
+          "url": "https://timesofindia.indiatimes.com/world/us/what-is-the-rotherham-scandal-involving-pakistani-grooming-gangs/articleshow/116885428.cms",
+          "title": "What is the Rotherham scandal involving Pakistani grooming gangs?",
+          "snippet": "US News: Explore the harrowing details of the Rotherham grooming scandal involving Pakistani gangs, systemic failures, and the impact on child victims. Understand the lessons learned and current challenges in safeguarding efforts.",
+          "full_text": null,
+          "domain": "timesofindia.indiatimes.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987569Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.5239,
+        "chronological_rank": 11,
+        "composite_score": 0.5038,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "db7c8569-14da-4ff7-9683-7975bd9a8221",
+          "url": "https://www.facebook.com/TheJerusalemPost/posts/a-british-mp-claimed-90-of-mass-rapes-were-committed-by-muslim-menhis-remarks-ca/1180625524091420/",
+          "title": "A British MP claimed 90% of mass rapes were committed by Muslim ...",
+          "snippet": "20 Jul 2025 · “The widespread sexual abuse of vulnerable girls by majority Pakistani grooming and rape gangs ... grooming gangs operating in the town “for fear ...",
+          "full_text": null,
+          "domain": "facebook.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987614Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.7531,
+        "chronological_rank": 20,
+        "composite_score": 0.4519,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    },
+    {
+      "ranked_result": {
+        "scraped_result": {
+          "result_id": "1f6b4021-2f46-4cc6-945f-fac3aa9cf832",
+          "url": "https://www.bbc.com/news/uk-65174096",
+          "title": "Grooming gangs and ethnicity: What does the evidence say?",
+          "snippet": "The Home Office clarified that she was talking about three of the most notorious grooming gang cases, from Rochdale, Rotherham, and Telford. So what does the evidence say about the ethnicity of members of grooming gangs who sexually exploit children?",
+          "full_text": null,
+          "domain": "bbc.com",
+          "content_type": "article",
+          "published_at": null,
+          "scraped_at": "2026-05-28T12:56:45.987578Z",
+          "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+          "scraper_id": "basic",
+          "http_status": null,
+          "error": null
+        },
+        "similarity_score": 0.474,
+        "chronological_rank": 13,
+        "composite_score": 0.4318,
+        "is_likely_original": false
+      },
+      "detection_methods": [
+        {
+          "method_name": "gptzero",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "GPTZERO_API_KEY not configured"
+        },
+        {
+          "method_name": "sapling",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "SAPLING_API_KEY not configured"
+        },
+        {
+          "method_name": "statistical",
+          "score": 0.3,
+          "label": "HUMAN",
+          "raw_response": {
+            "features": {
+              "sentence_uniformity": 0.5,
+              "burstiness_ai": 0.5,
+              "transition_density_ai": 0.0,
+              "hedging_density_ai": 0.0,
+              "paragraph_homogeneity": 0.5
+            },
+            "aggregate_score": 0.3
+          },
+          "error": null
+        },
+        {
+          "method_name": "llm_judge",
+          "score": null,
+          "label": null,
+          "raw_response": {},
+          "error": "ANTHROPIC_API_KEY not configured"
+        }
+      ],
+      "ensemble_score": 0.3,
+      "is_ai_generated": false,
+      "confidence": 0.67,
+      "explanation": "Verdict: likely human-written. Ensemble score 0.30 from 1 method(s) [statistical=0.30]  (skipped: gptzero, sapling, llm_judge). Threshold=0.65, confidence=0.67."
+    }
+  ],
+  "earliest_source": {
+    "scraped_result": {
+      "result_id": "ef74caec-2cc3-4eee-aa36-336fbe91ec89",
+      "url": "https://en.wikipedia.org/wiki/Islamophobic_trope",
+      "title": "Islamophobic trope - Wikipedia",
+      "snippet": "... Pakistani British origin, have been described as a grooming gangs scandal. ... Terrorist attacks committed by Muslim extremists receive 357% more US press ...",
+      "full_text": null,
+      "domain": "en.wikipedia.org",
+      "content_type": "article",
+      "published_at": null,
+      "scraped_at": "2026-05-28T12:56:45.987479Z",
+      "query_used": "Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targeted, and Islamic extremism is 90% of terror attacks.",
+      "scraper_id": "basic",
+      "http_status": null,
+      "error": null
+    },
+    "similarity_score": 0.7178,
+    "chronological_rank": 1,
+    "composite_score": 0.8307,
+    "is_likely_original": true
+  },
+  "disinformation_risk": 0.3,
+  "risk_label": "LOW",
+  "pipeline_version": "0.1.0",
+  "generated_at": "2026-05-28T12:56:53.169850Z",
+  "total_duration_seconds": 11.504435917013325,
+  "summary": "Provenance analysis of \"Pakistani grooming gangs raped 100s of thousands of little girls, Jews are targe\": 10 candidate article(s) analysed. 0 of 10 appear AI-generated (max ensemble score: 0.30). Disinformation risk: LOW. The earliest source identified is en.wikipedia.org (unknown date)."
+}

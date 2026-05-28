@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from enum import StrEnum
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -30,14 +30,14 @@ from pydantic import BaseModel, Field
 #  Enums
 # ══════════════════════════════════════════════════════════════════════════════
 
-class NewsSource(StrEnum):
+class NewsSource(str, Enum):
     """Where a NewsItem was ingested from."""
     TELEGRAM = "telegram"
     RSS      = "rss"
     MANUAL   = "manual"   # Injected directly via CLI / scripts / tests
 
 
-class ContentType(StrEnum):
+class ContentType(str, Enum):
     """Best-guess classification of a scraped page."""
     ARTICLE     = "article"
     SOCIAL_POST = "social_post"
@@ -45,7 +45,7 @@ class ContentType(StrEnum):
     UNKNOWN     = "unknown"
 
 
-class RiskLabel(StrEnum):
+class RiskLabel(str, Enum):
     """Human-readable disinformation risk tier on the final report."""
     LOW      = "LOW"
     MEDIUM   = "MEDIUM"
