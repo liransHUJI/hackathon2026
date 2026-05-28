@@ -58,7 +58,7 @@ func main() {
 	registry := providers.NewRegistry()
 	registry.Register(brightdata.NewXWithDataset(cfg.BrightDataAPIKey, cfg.BrightDataXDatasetID, cfg.BrightDataBudgetUSD))
 	registry.Register(brightdata.NewWebWithUnlocker(cfg.BrightDataAPIKey, cfg.BrightDataUnlockerZone, cfg.BrightDataBudgetUSD))
-	registry.Register(basicweb.New())
+	registry.Register(basicweb.New(cfg.BasicWebDomainRPS))
 
 	geminiClient := gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiFastModel)
 	if err := startProvenanceWorkers(ctx, cfg, store, natsClient, registry, geminiClient, logger); err != nil {

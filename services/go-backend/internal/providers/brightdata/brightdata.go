@@ -261,18 +261,17 @@ func (p *Provider) collectWeb(ctx context.Context, target models.CollectionTarge
 	if err := p.ensureAvailable(0.002); err != nil {
 		return nil, err
 	}
-	if p.unlockerZone == "" {
-		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_UNLOCKER_ZONE", providers.ErrUnavailable, p.id)
-	}
 	targetURL := target.Query
 	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 		targetURL = "https://www.google.com/search?q=" + url.QueryEscape(target.Query)
 	}
 	requestBody := map[string]any{
 		"url":         targetURL,
-		"zone":        p.unlockerZone,
 		"format":      "raw",
 		"data_format": "markdown",
+	}
+	if strings.TrimSpace(p.unlockerZone) != "" {
+		requestBody["zone"] = p.unlockerZone
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
@@ -294,6 +293,7 @@ func (p *Provider) collectWeb(ctx context.Context, target models.CollectionTarge
 		return nil, fmt.Errorf("%w: bright data web unlocker failed with %d: %s", providers.ErrUnavailable, resp.StatusCode, truncate(string(respBody), 300))
 	}
 	text := strings.TrimSpace(string(respBody))
+	text = truncate(text, 8000)
 	now := time.Now().UTC()
 	item := models.SourceItem{
 		SourceID:           uuid.NewString(),
@@ -391,6 +391,7 @@ func sourceItemToResult(item models.SourceItem) models.SourceResult {
 	if strings.TrimSpace(fullText) == "" {
 		fullText = item.Snippet
 	}
+	fullText = truncate(fullText, 8000)
 	now := time.Now().UTC()
 	scrapedAt := item.CollectedAt
 	if scrapedAt.IsZero() {

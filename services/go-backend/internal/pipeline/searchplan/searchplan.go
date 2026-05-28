@@ -46,7 +46,17 @@ func (p *Processor) Process(set models.PermutationSet) models.SourceSearchPlan {
 		maxWeb = int(float64(maxTotal) * 0.25)
 	}
 
-	targets := make([]models.SourceTarget, 0, len(set.Permutations)*3)
+	targets := make([]models.SourceTarget, 0, len(set.Permutations)*3+len(set.URLTerms))
+	for _, urlTerm := range set.URLTerms {
+		targets = append(targets, models.SourceTarget{
+			Provider:       "basic_web",
+			SourceTypes:    []string{"web_article"},
+			Query:          urlTerm,
+			MaxResults:     1,
+			Priority:       10,
+			SearchStrategy: "direct_url_fallback",
+		})
+	}
 	for idx, perm := range set.Permutations {
 		if idx < max(1, len(set.Permutations)/2) {
 			targets = append(targets, models.SourceTarget{
@@ -70,9 +80,9 @@ func (p *Processor) Process(set models.PermutationSet) models.SourceSearchPlan {
 			Provider:       "basic_web",
 			SourceTypes:    []string{"web_article", "search_result"},
 			Query:          perm.Text,
-			MaxResults:     1,
+			MaxResults:     max(2, maxWeb/max(1, len(set.Permutations))),
 			Priority:       3,
-			SearchStrategy: "fallback",
+			SearchStrategy: "free_search_fallback",
 		})
 	}
 	return models.SourceSearchPlan{
