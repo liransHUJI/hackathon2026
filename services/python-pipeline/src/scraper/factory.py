@@ -20,7 +20,7 @@ Supported backends
 from __future__ import annotations
 
 import logging
-from enum import StrEnum
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from src.scraper.base import BaseScraper
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("provenance.scraper.factory")
 
 
-class ScraperBackend(StrEnum):
+class ScraperBackend(str, Enum):
     BASIC      = "basic"
     BRIGHTDATA = "brightdata"
 
