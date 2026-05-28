@@ -190,12 +190,32 @@ func (s *Server) stopCrawl(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runOnce(w http.ResponseWriter, r *http.Request) {
-	resp, err := s.engine.RunDiscovery(r.Context(), r.PathValue("campaign_id"))
+	campaignID := r.PathValue("campaign_id")
+	campaign, err := s.store.GetCampaign(r.Context(), campaignID)
 	if err != nil {
 		writeError(w, notFoundStatus(err), err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, resp)
+	// Mark running immediately so the dashboard/status reflect the in-flight crawl, then run the
+	// (minutes-long) live provider discovery in the background to avoid HTTP timeouts.
+	campaign.Status = models.EngineStatusRunning
+	campaign.UpdatedAt = time.Now().UTC()
+	if err := s.store.UpsertCampaign(r.Context(), *campaign); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		defer cancel()
+		if _, err := s.engine.RunDiscovery(ctx, campaignID); err != nil {
+			s.logger.Error("background discovery run failed", "campaign_id", campaignID, "error", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, models.DiscoveryRunResponse{
+		CampaignID: campaignID,
+		Status:     models.EngineStatusRunning,
+		Message:    "discovery started in the background",
+	})
 }
 
 func (s *Server) crawlStatus(w http.ResponseWriter, r *http.Request) {

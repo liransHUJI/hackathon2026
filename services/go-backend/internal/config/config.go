@@ -18,6 +18,7 @@ type Config struct {
 	GeminiTokensPerMinute          int
 	BrightDataAPIKey               string
 	BrightDataUnlockerZone         string
+	BrightDataSERPZone             string
 	BrightDataXDatasetID           string
 	BrightDataSearchDatasetID      string
 	BrightDataBudgetUSD            float64
@@ -51,6 +52,7 @@ func Load() Config {
 		GeminiTokensPerMinute:          envInt("GEMINI_TOKENS_PER_MINUTE", 60000),
 		BrightDataAPIKey:               os.Getenv("BRIGHTDATA_API_KEY"),
 		BrightDataUnlockerZone:         os.Getenv("BRIGHTDATA_UNLOCKER_ZONE"),
+		BrightDataSERPZone:             os.Getenv("BRIGHTDATA_SERP_ZONE"),
 		BrightDataXDatasetID:           os.Getenv("BRIGHTDATA_X_DATASET_ID"),
 		BrightDataSearchDatasetID:      os.Getenv("BRIGHTDATA_SEARCH_DATASET_ID"),
 		BrightDataBudgetUSD:            envFloat("BRIGHTDATA_BUDGET_USD", 0),

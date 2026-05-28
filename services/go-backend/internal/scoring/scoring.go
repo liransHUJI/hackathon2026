@@ -124,6 +124,98 @@ func InterestGroupMatch(group models.InterestGroup, text string) float64 {
 	return pipeline.Clamp01(float64(matches) / math.Min(float64(total), 5))
 }
 
+// ClassifyXInteraction labels how a candidate post relates to an origin post and reports
+// whether the candidate is a distinct post that should count as an interaction. Types are
+// reply (comment), quote, repost, subtweet (topic match without an explicit reference), or post.
+func ClassifyXInteraction(origin, candidate models.SourceItem) (string, bool) {
+	if sameXPost(origin, candidate) {
+		return "", false
+	}
+	originHandle := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(origin.Author.Handle), "@"))
+	originURL := derefURL(origin.URL, origin.CanonicalURL)
+	text := strings.TrimSpace(strings.ToLower(candidate.Text))
+
+	if flaggedMeta(candidate.Engagement, "is_repost") {
+		return "repost", true
+	}
+	if flaggedMeta(candidate.Engagement, "is_quote") {
+		return "quote", true
+	}
+	if flaggedMeta(candidate.Engagement, "is_reply") {
+		return "reply", true
+	}
+	if originHandle != "" {
+		mention := "@" + originHandle
+		if strings.HasPrefix(text, "rt "+mention) {
+			return "repost", true
+		}
+		if strings.HasPrefix(text, mention) || mentionsHandle(candidate, originHandle) && strings.Contains(text, mention) {
+			return "reply", true
+		}
+		if strings.Contains(text, mention) {
+			return "quote", true
+		}
+	}
+	if originURL != "" {
+		for _, link := range candidate.LinkedURLs {
+			if strings.Contains(strings.ToLower(link), strings.ToLower(originURL)) {
+				return "quote", true
+			}
+		}
+	}
+	// No explicit reference: a subtweet shares the narrative topic without naming the origin.
+	if sharesTopic(origin, candidate) {
+		return "subtweet", true
+	}
+	return "post", true
+}
+
+func sameXPost(a, b models.SourceItem) bool {
+	if a.SourceID != "" && a.SourceID == b.SourceID {
+		return true
+	}
+	au := derefURL(a.URL, a.CanonicalURL)
+	bu := derefURL(b.URL, b.CanonicalURL)
+	return au != "" && strings.EqualFold(au, bu)
+}
+
+func derefURL(values ...*string) string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return strings.TrimSpace(*value)
+		}
+	}
+	return ""
+}
+
+func flaggedMeta(meta map[string]any, key string) bool {
+	if meta == nil {
+		return false
+	}
+	b, _ := meta[key].(bool)
+	return b
+}
+
+func mentionsHandle(candidate models.SourceItem, handle string) bool {
+	for _, entity := range candidate.MentionedEntities {
+		if strings.EqualFold(strings.TrimPrefix(entity, "@"), handle) {
+			return true
+		}
+	}
+	return false
+}
+
+func sharesTopic(a, b models.SourceItem) bool {
+	for _, ha := range a.Hashtags {
+		for _, hb := range b.Hashtags {
+			if strings.EqualFold(ha, hb) {
+				return true
+			}
+		}
+	}
+	return LexicalSimilarity(a.Text, b.Text) >= 0.18
+}
+
 func ActorBotScore(account models.AccountProfile, interactions []models.InteractionEvent) (float64, []string) {
 	score := account.BotLikelihood
 	evidence := []string{}

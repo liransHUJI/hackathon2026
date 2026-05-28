@@ -1,706 +1,546 @@
-// ═══════════════════════════════════════════════════════════════════
-// DataScope — Provenance Analytics UI
-// Reads ProvenanceReport JSON from the backend pipeline
-// ═══════════════════════════════════════════════════════════════════
+"use strict";
 
-const USE_MOCK = false;
-const MOCK_DATA_URL = "mock-data.json";
-const REPORTS_API_URL = "/v1/reports";
+let state = {
+  campaigns: [],
+  currentCampaignId: null,
+  currentCampaign: null,
+  pollTimer: null,
+};
 
-let reportData = null;
-let chartInstances = {};
+document.addEventListener("DOMContentLoaded", () => {
+  loadCampaigns();
+});
 
-// ===== IMAGE HELPER =====
-// Uses loremflickr.com with topic keywords extracted from the analysis results.
-// The backend returns _ui_topics (most prevalent words from scraped content).
-// We use those for more relevant, distinguishing imagery.
-function getTopicImageUrl(keywords, w = 800, h = 600, seed = 1) {
-  // keywords can be a string or array
-  let kw;
-  if (Array.isArray(keywords)) {
-    kw = keywords.slice(0, 3).join(",");
-  } else {
-    kw = keywords.split(" ").slice(0, 3).join(",");
-  }
-  return `https://loremflickr.com/${w}/${h}/${encodeURIComponent(kw)}?lock=${seed}`;
-}
-
-/**
- * Extract the most interesting/prevalent topics from the report data.
- * Uses _ui_topics from backend if available, otherwise extracts from titles.
- */
-function extractTopics(data) {
-  // Backend provides extracted topics
-  if (data._ui_topics && data._ui_topics.length > 0) {
-    return data._ui_topics;
-  }
-
-  // Fallback: extract from titles in the results
-  const texts = (data.ai_signature_results || [])
-    .map(r => r.ranked_result?.scraped_result?.title || "")
-    .join(" ");
-
-  const stopWords = new Set(["the","a","an","is","are","was","were","and","or","but","in","on","at","to","for","of","with","by","from","that","this","it","its","not","has","have","had","been","will","would","could","should","can","may","might","shall","about","into","through","during","before","after","between","out","off","over","under","up","down","no","all","each","every","both","few","more","most","other","some","such","only","own","same","so","than","too","very","just","also","how","what","which","who","whom","whose","where","when","why"]);
-
-  const wordCounts = {};
-  texts.toLowerCase().split(/\W+/).forEach(w => {
-    if (w.length > 3 && !stopWords.has(w)) {
-      wordCounts[w] = (wordCounts[w] || 0) + 1;
-    }
-  });
-
-  return Object.entries(wordCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(e => e[0]);
-}
-
-// ===== ENTRY POINTS =====
-function startScrape() {
-  const query = document.getElementById("queryInput").value.trim();
-  if (!query) return;
-  runAnalysis(query);
-}
-
-function startScrapeFromTop() {
-  const query = document.getElementById("queryInputTop").value.trim();
-  if (!query) return;
-  runAnalysis(query);
-}
-
-function goHome() {
-  document.getElementById("dashboardView").classList.add("hidden");
-  document.getElementById("landingView").classList.remove("hidden");
-  destroyCharts();
-}
-
-// ===== MAIN FLOW =====
-async function runAnalysis(query) {
-  showLoading(query);
-
+// ---------- API helpers ----------
+async function api(path, options) {
+  const resp = await fetch(path, options);
+  const text = await resp.text();
+  let data = null;
   try {
-    let data;
-    if (USE_MOCK) {
-      await sleep(2000);
-      const resp = await fetch(MOCK_DATA_URL);
-      if (!resp.ok) throw new Error("Failed to load data");
-      data = await resp.json();
-    } else {
-      data = await runGoReportPipeline(query);
-    }
-
-    data = normalizeReportForDashboard(data);
-    reportData = data;
-
-    // Extract prevalent topics for imagery
-    const topics = extractTopics(data);
-
-    document.getElementById("landingView").classList.add("hidden");
-    document.getElementById("dashboardView").classList.remove("hidden");
-    document.getElementById("topbarDate").textContent = new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-
-    applyTopicVisuals(topics, data);
-    populateSummary(data);
-    renderSimilarityChart(data);
-    renderDomainChart(data);
-    renderContentTypeChart(data);
-    renderBotChart(data);
-    renderFeaturesChart(data);
-    renderTimelineChart(data);
-    renderConfidenceChart(data);
-    renderScatterChart(data);
-    renderArticlesList(data);
-
-    hideLoading();
-  } catch (err) {
-    hideLoading();
-    showError(err.message);
+    data = text ? JSON.parse(text) : null;
+  } catch (_) {
+    data = text;
   }
-}
-
-async function runGoReportPipeline(query) {
-  const submitResp = await fetch(REPORTS_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input_type: "auto",
-      input: query,
-      priority: "interactive",
-      options: {
-        include_raw_sources: false,
-        max_sources: 80,
-        x_search_depth: "standard",
-        web_search_depth: "standard",
-      },
-    }),
-  });
-  if (!submitResp.ok) {
-    const err = await submitResp.json().catch(() => ({}));
-    throw new Error(err.error || `Failed to submit report (${submitResp.status})`);
+  if (!resp.ok) {
+    const msg = (data && data.error) || `${resp.status} ${resp.statusText}`;
+    throw new Error(msg);
   }
-
-  const submitted = await submitResp.json();
-  const jobID = submitted.job_id;
-  const reportID = submitted.report_id;
-  if (!jobID || !reportID) {
-    throw new Error("Backend did not return a job_id and report_id");
-  }
-
-  const deadline = Date.now() + 180000;
-  while (Date.now() < deadline) {
-    await sleep(2000);
-    const jobResp = await fetch(`/v1/jobs/${encodeURIComponent(jobID)}`);
-    if (!jobResp.ok) {
-      const err = await jobResp.json().catch(() => ({}));
-      throw new Error(err.error || `Failed to read job status (${jobResp.status})`);
-    }
-    const job = await jobResp.json();
-    updateLoadingFromJob(job);
-
-    if (job.status === "completed" || job.status === "partial") {
-      const reportResp = await fetch(`/v1/reports/${encodeURIComponent(reportID)}`);
-      if (!reportResp.ok) {
-        const err = await reportResp.json().catch(() => ({}));
-        throw new Error(err.error || `Failed to fetch report (${reportResp.status})`);
-      }
-      return await reportResp.json();
-    }
-    if (job.status === "failed" || job.status === "cancelled") {
-      throw new Error(job.error || `Pipeline ${job.status}`);
-    }
-  }
-
-  throw new Error("Pipeline timed out while waiting for the Go report job.");
-}
-
-function updateLoadingFromJob(job) {
-  const subtext = document.getElementById("loadingSubtext");
-  if (!subtext) return;
-  const progress = job.progress || {};
-  const stage = (job.current_stage || "pipeline").replaceAll("_", " ");
-  const completed = progress.completed_stages ?? 0;
-  const total = progress.total_stages ?? "?";
-  subtext.textContent = `Running ${stage} (${completed}/${total}) • ${progress.sources_found || 0} sources found • ${progress.sources_analyzed || 0} analyzed`;
-}
-
-function normalizeReportForDashboard(data) {
-  const sourceItem = data.source_item || {};
-  if (!sourceItem.headline) {
-    sourceItem.headline = data.canonical_claim || sourceItem.original_input || "Analysis Report";
-  }
-  data.source_item = sourceItem;
-  data.risk_label = data.risk_label || "LOW";
-  data.disinformation_risk = data.disinformation_risk ?? 0;
-  data.pipeline_version = data.pipeline_version || "go";
-  data.total_duration_seconds = data.total_duration_seconds ?? 0;
-
-  data.ai_signature_results = (data.ai_signature_results || []).map(result => {
-    const ranked = result.ranked_result || {};
-    const source = ranked.scraped_result || ranked.enriched_source?.source_result || {};
-    const url = source.url || source.canonical_url || "";
-    ranked.scraped_result = {
-      result_id: source.result_id || source.source_id || "",
-      url,
-      title: source.title || "Untitled source",
-      snippet: source.snippet || source.full_text || "",
-      domain: source.domain || domainFromURL(url) || source.provider || "unknown",
-      content_type: source.content_type || source.source_type || "unknown",
-      published_at: source.published_at || source.indexed_at || null,
-      scraped_at: source.scraped_at || new Date().toISOString(),
-    };
-    ranked.similarity_score = ranked.similarity_score ?? 0;
-    ranked.chronological_rank = ranked.chronological_rank ?? 0;
-    ranked.composite_score = ranked.composite_score ?? 0;
-    ranked.is_likely_original = ranked.is_likely_original ?? ranked.is_candidate_origin ?? false;
-    result.ranked_result = ranked;
-    result.detection_methods = (result.detection_methods || []).map(method => ({
-      ...method,
-      method_name: method.method_name || method.name,
-      label: method.label || labelFromScore(method.score),
-      error: method.error || null,
-    }));
-    return result;
-  });
   return data;
 }
 
-function domainFromURL(value) {
+function csv(value) {
+  return (value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  el.classList.toggle("toast-error", !!isError);
+  setTimeout(() => el.classList.add("hidden"), 3500);
+}
+
+function showView(id) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.add("hidden"));
+  document.getElementById(id).classList.remove("hidden");
+}
+
+function stopPolling() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+// ---------- Campaigns list ----------
+async function loadCampaigns() {
   try {
-    return value ? new URL(value).hostname.replace(/^www\./, "") : "";
-  } catch {
-    return "";
+    const data = await api("/v1/campaigns");
+    state.campaigns = (data && data.campaigns) || [];
+  } catch (e) {
+    state.campaigns = [];
+    toast("Could not load campaigns: " + e.message, true);
+  }
+  renderSwitcher();
+  renderCampaigns();
+}
+
+function renderSwitcher() {
+  const sel = document.getElementById("campaignSwitcher");
+  if (!state.campaigns.length) {
+    sel.innerHTML = `<option value="">No campaigns</option>`;
+    sel.classList.add("hidden");
+    return;
+  }
+  sel.classList.remove("hidden");
+  sel.innerHTML =
+    `<option value="">Switch campaign…</option>` +
+    state.campaigns
+      .map(
+        (c) =>
+          `<option value="${c.campaign_id}" ${
+            c.campaign_id === state.currentCampaignId ? "selected" : ""
+          }>${escapeHtml(c.client_name)}</option>`
+      )
+      .join("");
+}
+
+function onSwitchCampaign() {
+  const id = document.getElementById("campaignSwitcher").value;
+  if (id) openCampaign(id);
+}
+
+function renderCampaigns() {
+  const list = document.getElementById("campaignsList");
+  const empty = document.getElementById("campaignsEmpty");
+  if (!state.campaigns.length) {
+    list.innerHTML = "";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  list.innerHTML = state.campaigns
+    .map((c) => {
+      const topics = (c.monitored_topics || []).slice(0, 4);
+      return `
+      <div class="campaign-card" onclick="openCampaign('${c.campaign_id}')">
+        <div class="campaign-card-head">
+          <h3>${escapeHtml(c.client_name)}</h3>
+          <span class="status-pill status-${c.status}">${c.status}</span>
+        </div>
+        <p class="campaign-card-meta">${escapeHtml(c.region || "Global")} · ${
+        (c.languages || ["en"]).join(", ")
+      }</p>
+        <div class="chips">${topics
+          .map((t) => `<span class="chip">${escapeHtml(t)}</span>`)
+          .join("")}</div>
+        <div class="campaign-card-foot">Open dashboard &rarr;</div>
+      </div>`;
+    })
+    .join("");
+}
+
+function goCampaigns() {
+  stopPolling();
+  showView("campaignsView");
+  loadCampaigns();
+}
+
+// ---------- New campaign ----------
+function openNewCampaign() {
+  showView("newCampaignView");
+  document.getElementById("formError").classList.add("hidden");
+}
+
+async function submitCampaign(ev) {
+  ev.preventDefault();
+  const btn = document.getElementById("createBtn");
+  const errEl = document.getElementById("formError");
+  errEl.classList.add("hidden");
+
+  const keywords = csv(document.getElementById("f_keywords").value);
+  const hashtags = csv(document.getElementById("f_hashtags").value);
+  const interestGroups = [];
+  if (keywords.length || hashtags.length) {
+    interestGroups.push({
+      name: "Primary tracking",
+      keywords,
+      hashtags,
+      priority: 1,
+    });
+  }
+
+  const payload = {
+    client_name: document.getElementById("f_client_name").value.trim(),
+    client_aliases: csv(document.getElementById("f_aliases").value),
+    region: document.getElementById("f_region").value.trim(),
+    monitored_topics: csv(document.getElementById("f_topics").value),
+    opponents: csv(document.getElementById("f_opponents").value),
+    interest_groups: interestGroups,
+    languages: ["en"],
+    crawl_budget: {
+      top_narratives: parseInt(document.getElementById("f_top").value, 10) || 5,
+      interactions_per_narrative:
+        parseInt(document.getElementById("f_interactions").value, 10) || 40,
+      max_collection_results:
+        parseInt(document.getElementById("f_maxresults").value, 10) || 60,
+    },
+  };
+
+  btn.disabled = true;
+  btn.textContent = "Creating…";
+  try {
+    const campaign = await api("/v1/campaigns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (document.getElementById("f_runnow").checked) {
+      await api(`/v1/campaigns/${campaign.campaign_id}/crawl/run-once`, {
+        method: "POST",
+      });
+    }
+    toast("Campaign created. Gathering started.");
+    await loadCampaigns();
+    openCampaign(campaign.campaign_id);
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Create & gather";
   }
 }
 
-function labelFromScore(score) {
-  if (score === null || score === undefined) return null;
-  if (score >= 0.65) return "AI";
-  if (score < 0.35) return "HUMAN";
-  return "UNCERTAIN";
+// ---------- Dashboard ----------
+async function openCampaign(id) {
+  state.currentCampaignId = id;
+  state.currentCampaign = state.campaigns.find((c) => c.campaign_id === id) || null;
+  showView("dashboardView");
+  renderSwitcher();
+  document.getElementById("dashClient").textContent = state.currentCampaign
+    ? state.currentCampaign.client_name
+    : "Campaign";
+  document.getElementById("narrativeCards").innerHTML = "";
+  document.getElementById("dashSummary").textContent = "Loading…";
+  await refreshDashboard();
+  // Poll while a crawl is running.
+  stopPolling();
+  state.pollTimer = setInterval(refreshDashboard, 6000);
 }
 
-function showError(msg) {
-  // Show error in a styled overlay instead of alert()
-  const overlay = document.createElement("div");
-  overlay.id = "errorOverlay";
-  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;";
-  overlay.innerHTML = `
-    <div style="background:#1a2332;border:1px solid #ff4757;border-radius:16px;padding:32px;max-width:500px;width:100%;text-align:center;">
-      <div style="font-size:2rem;margin-bottom:12px;">⚠️</div>
-      <h3 style="color:#ff4757;margin-bottom:12px;font-size:1.1rem;">Analysis Failed</h3>
-      <p style="color:#7a8ba0;font-size:0.9rem;line-height:1.6;margin-bottom:20px;">${msg}</p>
-      <button onclick="document.getElementById('errorOverlay').remove()" style="background:#ff4757;color:#fff;border:none;border-radius:8px;padding:10px 24px;font-size:0.9rem;font-weight:600;cursor:pointer;">OK</button>
-    </div>
+async function refreshDashboard() {
+  const id = state.currentCampaignId;
+  if (!id) return;
+  try {
+    const [snapshot, status] = await Promise.all([
+      api(`/v1/campaigns/${id}/dashboard`),
+      api(`/v1/campaigns/${id}/crawl/status`).catch(() => null),
+    ]);
+    renderDashboard(snapshot, status);
+  } catch (e) {
+    toast("Dashboard error: " + e.message, true);
+  }
+}
+
+function renderDashboard(snapshot, status) {
+  const statusEl = document.getElementById("dashStatus");
+  const effStatus = (status && status.status) || snapshot.status || "unknown";
+  statusEl.textContent = effStatus;
+  statusEl.className = "status-pill status-" + effStatus;
+
+  if (effStatus === "running") {
+    document.getElementById("runBtn").disabled = true;
+    document.getElementById("runBtn").textContent = "Gathering…";
+  } else {
+    document.getElementById("runBtn").disabled = false;
+    document.getElementById("runBtn").textContent = "Gather now";
+    if (effStatus !== "running") stopPolling();
+  }
+
+  document.getElementById("dashSummary").textContent =
+    snapshot.executive_summary || "";
+
+  const cards = snapshot.narratives || [];
+  // Dashboard stats
+  const totalInteractions = cards.reduce(
+    (a, c) => a + (c.total_interactions || 0),
+    0
+  );
+  const avgInauth =
+    cards.length > 0
+      ? cards.reduce((a, c) => a + (c.inauthentic_percentage || 0), 0) /
+        cards.length
+      : 0;
+  document.getElementById("dashStats").innerHTML = `
+    ${statCard("Narratives", cards.length)}
+    ${statCard("Total interactions", totalInteractions.toLocaleString())}
+    ${statCard("Avg bot/AI-driven", avgInauth.toFixed(0) + "%", avgInauth >= 40 ? "bad" : "ok")}
+    ${statCard(
+      "Sources",
+      (status && status.sources_collected) || (snapshot.source_counts && snapshot.source_counts.narratives) || 0
+    )}
   `;
-  document.body.appendChild(overlay);
+
+  const container = document.getElementById("narrativeCards");
+  const empty = document.getElementById("dashEmpty");
+  if (!cards.length) {
+    container.innerHTML = "";
+    empty.classList.remove("hidden");
+    document.getElementById("dashEmptyMsg").textContent =
+      effStatus === "running"
+        ? "Gathering narratives in the background… this refreshes automatically."
+        : "No narratives collected yet. Click \u201CGather now\u201D to run a crawl.";
+    return;
+  }
+  empty.classList.add("hidden");
+  container.innerHTML = cards.map((c, i) => narrativeCardHtml(c, i)).join("");
 }
 
-// ===== LOADING =====
-function showLoading(query) {
-  document.getElementById("loadingOverlay").classList.remove("hidden");
-  if (query) {
-    // Use the raw query for loading screen images (topics not yet available)
-    const keywords = query.split(" ").filter(w => w.length > 3).slice(0, 3);
-    const imgKeywords = keywords.length > 0 ? keywords : ["analysis", "data", "research"];
-    document.getElementById("loadingBgImage").style.backgroundImage = `url('${getTopicImageUrl(imgKeywords, 1200, 800, 99)}')`;
-    document.getElementById("loadingSubtext").textContent = `Running provenance pipeline for "${query.slice(0, 60)}${query.length > 60 ? "..." : ""}"`;
+function statCard(label, value, tone) {
+  return `<div class="stat ${tone || ""}"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`;
+}
+
+function narrativeCardHtml(c, idx) {
+  const auth = c.authentic_percentage || 0;
+  const inauth = c.inauthentic_percentage || 0;
+  const unknown = c.unknown_percentage || 0;
+  const trendIcon =
+    c.trend === "rising" ? "↑" : c.trend === "falling" ? "↓" : "→";
+  return `
+  <div class="narrative-card" onclick="openNarrative('${c.narrative_id}')">
+    <div class="nc-rank">#${c.popularity_rank || idx + 1}</div>
+    <div class="nc-main">
+      <div class="nc-title-row">
+        <h4>${escapeHtml(c.narrative || "Narrative")}</h4>
+        <span class="trend trend-${c.trend || "flat"}">${trendIcon} ${c.trend || "flat"}</span>
+      </div>
+      <p class="nc-summary">${escapeHtml(c.summary || "")}</p>
+      ${authenticityBar(auth, inauth, unknown)}
+      <div class="nc-stats">
+        <span title="Total classified interactions">💬 ${(c.total_interactions || 0).toLocaleString()} interactions</span>
+        <span title="Estimated reach">📡 ${formatReach(c.reach_estimate)}</span>
+        <span title="Bot/AI-driven share">🤖 ${inauth.toFixed(0)}% bot/AI-driven</span>
+        <span title="Organic share">🌱 ${auth.toFixed(0)}% organic</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function authenticityBar(auth, inauth, unknown) {
+  return `
+  <div class="auth-bar" title="Organic ${auth.toFixed(0)}% · Bot/AI ${inauth.toFixed(
+    0
+  )}% · Unknown ${unknown.toFixed(0)}%">
+    <div class="auth-seg auth-organic" style="width:${auth}%"></div>
+    <div class="auth-seg auth-bot" style="width:${inauth}%"></div>
+    <div class="auth-seg auth-unknown" style="width:${unknown}%"></div>
+  </div>`;
+}
+
+function formatReach(n) {
+  n = n || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+}
+
+async function runCrawl() {
+  const id = state.currentCampaignId;
+  if (!id) return;
+  try {
+    await api(`/v1/campaigns/${id}/crawl/run-once`, { method: "POST" });
+    toast("Gathering started in the background.");
+    stopPolling();
+    state.pollTimer = setInterval(refreshDashboard, 6000);
+    refreshDashboard();
+  } catch (e) {
+    toast("Could not start crawl: " + e.message, true);
   }
 }
-function hideLoading() { document.getElementById("loadingOverlay").classList.add("hidden"); }
 
-// ===== TOPIC VISUALS =====
-function applyTopicVisuals(topics, data) {
-  // Use extracted topics for all imagery — these are the most prevalent
-  // and distinguishing words from the actual scraped content
-  const imgTopics = topics.length > 0 ? topics : ["news", "analysis"];
-
-  // Dashboard background — use first 2 topics for a broad image
-  const bgEl = document.getElementById("dashboardBgImage");
-  bgEl.style.backgroundImage = `url('${getTopicImageUrl(imgTopics.slice(0, 2), 1400, 900, 1)}')`;
-
-  // Floating images — each uses a different subset of topics for variety
-  const floatingContainer = document.getElementById("floatingImages");
-  floatingContainer.innerHTML = "";
-  for (let i = 0; i < 3; i++) {
-    const div = document.createElement("div");
-    div.className = "floating-img";
-    // Rotate through different topic combinations for each floating image
-    const topicSlice = [imgTopics[i % imgTopics.length], imgTopics[(i + 1) % imgTopics.length]];
-    div.style.backgroundImage = `url('${getTopicImageUrl(topicSlice, 400, 300, i + 10)}')`;
-    floatingContainer.appendChild(div);
+// ---------- Narrative detail ----------
+async function openNarrative(id) {
+  stopPolling();
+  showView("narrativeView");
+  const el = document.getElementById("narrativeDetail");
+  el.innerHTML = `<div class="loading-inline">Loading narrative…</div>`;
+  try {
+    const [detail, interactionsResp, actorsResp] = await Promise.all([
+      api(`/v1/narratives/${id}`),
+      api(`/v1/narratives/${id}/interactions?limit=500`).catch(() => ({ interactions: [] })),
+      api(`/v1/narratives/${id}/actors?limit=500`).catch(() => ({ actors: [] })),
+    ]);
+    renderNarrative(detail, interactionsResp.interactions || [], actorsResp.actors || []);
+  } catch (e) {
+    el.innerHTML = `<div class="form-error">Could not load narrative: ${escapeHtml(
+      e.message
+    )}</div>`;
   }
-
-  // Risk banner
-  const risk = data.risk_label || "LOW";
-  const gauge = document.getElementById("riskGauge");
-  gauge.className = `risk-gauge ${risk.toLowerCase()}`;
-  gauge.querySelector(".risk-gauge-label").textContent = risk;
-
-  const headline = data.source_item?.headline || imgTopics.join(" ");
-  document.getElementById("topicBannerTitle").textContent = headline.length > 80 ? headline.slice(0, 80) + "..." : headline;
-  document.getElementById("topicBannerSub").textContent = `${data.ai_signature_results.length} sources analyzed • Pipeline v${data.pipeline_version} • ${data.total_duration_seconds.toFixed(1)}s • Topics: ${imgTopics.slice(0, 3).join(", ")}`;
 }
 
-// ===== SUMMARY =====
-function populateSummary(data) {
-  const results = data.ai_signature_results || [];
-  const riskPct = Math.round(data.disinformation_risk * 100);
-  const aiCount = results.filter(r => r.is_ai_generated).length;
-  const avgBot = results.length > 0
-    ? (results.reduce((s, r) => s + r.ensemble_score, 0) / results.length).toFixed(2)
-    : "0.00";
-
-  document.getElementById("summaryRisk").textContent = `${riskPct}%`;
-  const badge = document.getElementById("summaryRiskBadge");
-  badge.textContent = data.risk_label;
-  badge.className = `risk-badge ${data.risk_label.toLowerCase()}`;
-
-  document.getElementById("summarySources").textContent = results.length;
-  document.getElementById("summaryAI").textContent = `${aiCount} / ${results.length}`;
-  document.getElementById("summaryBotAvg").textContent = avgBot;
+function backToDashboard() {
+  showView("dashboardView");
+  refreshDashboard();
 }
 
-// ===== CHARTS =====
-function destroyCharts() { Object.values(chartInstances).forEach(c => c.destroy()); chartInstances = {}; }
+function renderNarrative(detail, interactions, actors) {
+  const n = detail.narrative || {};
+  const sources = detail.sources || [];
+  const auth = n.authentic_percentage || 0;
+  const inauth = n.inauthentic_percentage || 0;
+  const unknown = n.unknown_percentage || 0;
 
-function chartDefaults() {
-  return { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } };
-}
-
-// 1. Similarity & Composite Scores (horizontal bar)
-function renderSimilarityChart(data) {
-  const ctx = document.getElementById("similarityChart").getContext("2d");
-  if (chartInstances.similarity) chartInstances.similarity.destroy();
-
-  const results = data.ai_signature_results;
-  const labels = results.map(r => truncate(r.ranked_result.scraped_result.domain, 20));
-  const similarity = results.map(r => r.ranked_result.similarity_score);
-  const composite = results.map(r => r.ranked_result.composite_score);
-
-  chartInstances.similarity = new Chart(ctx, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        { label: "Similarity", data: similarity, backgroundColor: "rgba(0,229,255,0.7)", borderRadius: 4 },
-        { label: "Composite", data: composite, backgroundColor: "rgba(0,212,170,0.7)", borderRadius: 4 },
-      ],
-    },
-    options: {
-      ...chartDefaults(),
-      indexAxis: "y",
-      plugins: { legend: { display: true, position: "top", labels: { color: "#7a8ba0", font: { size: 10 }, usePointStyle: true, pointStyle: "circle" } } },
-      scales: {
-        x: { min: 0, max: 1, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 10 } } },
-        y: { grid: { display: false }, ticks: { color: "#7a8ba0", font: { size: 10 } } },
-      },
-      onClick: (e, els) => { if (els.length) openSourceModal(els[0].index); },
-      onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
-    },
-  });
-}
-
-// 2. Domain Distribution (doughnut)
-function renderDomainChart(data) {
-  const ctx = document.getElementById("domainChart").getContext("2d");
-  if (chartInstances.domain) chartInstances.domain.destroy();
-
-  const domainCounts = {};
-  data.ai_signature_results.forEach(r => {
-    const d = r.ranked_result.scraped_result.domain;
-    domainCounts[d] = (domainCounts[d] || 0) + 1;
-  });
-
-  const labels = Object.keys(domainCounts);
-  const values = Object.values(domainCounts);
-  const colors = labels.map((_, i) => `hsl(${(i * 60 + 160) % 360}, 65%, 55%)`);
-
-  chartInstances.domain = new Chart(ctx, {
-    type: "doughnut",
-    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: "#1a2332", borderWidth: 3 }] },
-    options: {
-      ...chartDefaults(),
-      cutout: "60%",
-      plugins: { legend: { display: true, position: "bottom", labels: { color: "#7a8ba0", font: { size: 10 }, padding: 12, usePointStyle: true, pointStyle: "circle" } } },
-    },
-  });
-}
-
-// 3. Content Type (pie)
-function renderContentTypeChart(data) {
-  const ctx = document.getElementById("contentTypeChart").getContext("2d");
-  if (chartInstances.contentType) chartInstances.contentType.destroy();
-
-  const typeCounts = {};
-  data.ai_signature_results.forEach(r => {
-    const t = r.ranked_result.scraped_result.content_type || "unknown";
+  // Interaction-type breakdown
+  const typeCounts = { reply: 0, quote: 0, repost: 0, subtweet: 0, post: 0 };
+  interactions.forEach((it) => {
+    const t = it.interaction_type || "post";
     typeCounts[t] = (typeCounts[t] || 0) + 1;
   });
 
-  const colorMap = { article: "#4facfe", social_post: "#ff6b9d", forum: "#ffa502", unknown: "#7a8ba0" };
-  const labels = Object.keys(typeCounts);
-  const values = Object.values(typeCounts);
-  const colors = labels.map(l => colorMap[l] || "#7a8ba0");
+  const primary = n.primary_source_attribution;
+  const xSources = sources.filter((s) => s.source_type === "x_post");
+  const webSources = sources.filter((s) => s.source_type !== "x_post");
 
-  chartInstances.contentType = new Chart(ctx, {
-    type: "pie",
-    data: { labels: labels.map(l => l.replace("_", " ")), datasets: [{ data: values, backgroundColor: colors, borderColor: "#1a2332", borderWidth: 3 }] },
-    options: {
-      ...chartDefaults(),
-      plugins: { legend: { display: true, position: "bottom", labels: { color: "#7a8ba0", font: { size: 10 }, padding: 12, usePointStyle: true, pointStyle: "circle" } } },
-    },
-  });
-}
+  const el = document.getElementById("narrativeDetail");
+  el.innerHTML = `
+    <div class="nd-head">
+      <h2>${escapeHtml(n.narrative || "Narrative")}</h2>
+      <span class="risk-badge risk-${(n.risk_label || "low").toLowerCase()}">${
+    n.risk_label || "LOW"
+  } risk</span>
+    </div>
+    <p class="nd-summary">${escapeHtml(n.summary || "")}</p>
 
-// 4. Bot Likelihood (bar)
-function renderBotChart(data) {
-  const ctx = document.getElementById("botChart").getContext("2d");
-  if (chartInstances.bot) chartInstances.bot.destroy();
-
-  const results = data.ai_signature_results;
-  const labels = results.map(r => truncate(r.ranked_result.scraped_result.domain, 18));
-  const scores = results.map(r => r.ensemble_score);
-  const colors = scores.map(s => s >= 0.65 ? "rgba(255,71,87,0.8)" : s >= 0.35 ? "rgba(255,165,2,0.8)" : "rgba(0,212,170,0.7)");
-
-  chartInstances.bot = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets: [{ data: scores, backgroundColor: colors, borderRadius: 5, borderSkipped: false }] },
-    options: {
-      ...chartDefaults(),
-      scales: {
-        x: { grid: { display: false }, ticks: { color: "#7a8ba0", font: { size: 9 }, maxRotation: 45 } },
-        y: { min: 0, max: 1, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 10 } } },
-      },
-      onClick: (e, els) => { if (els.length) openSourceModal(els[0].index); },
-      onHover: (e, els) => { e.native.target.style.cursor = els.length ? "pointer" : "default"; },
-    },
-  });
-}
-
-// 5. Statistical Features (radar)
-function renderFeaturesChart(data) {
-  const ctx = document.getElementById("featuresChart").getContext("2d");
-  if (chartInstances.features) chartInstances.features.destroy();
-
-  const featureLabels = ["Sentence Uniformity", "Burstiness", "Transition Density", "Hedging Density", "Paragraph Homogeneity"];
-  const datasets = [];
-  const colors = ["#00d4aa", "#4facfe", "#ff6b9d", "#ffa502", "#00e5ff"];
-
-  data.ai_signature_results.slice(0, 5).forEach((r, i) => {
-    const stat = r.detection_methods.find(m => m.method_name === "statistical");
-    if (stat && stat.raw_response && stat.raw_response.features) {
-      const f = stat.raw_response.features;
-      datasets.push({
-        label: truncate(r.ranked_result.scraped_result.domain, 15),
-        data: [f.sentence_uniformity, f.burstiness_ai, f.transition_density_ai, f.hedging_density_ai, f.paragraph_homogeneity],
-        borderColor: colors[i],
-        backgroundColor: colors[i].replace(")", ",0.1)").replace("rgb", "rgba"),
-        pointBackgroundColor: colors[i],
-        borderWidth: 2,
-      });
-    }
-  });
-
-  chartInstances.features = new Chart(ctx, {
-    type: "radar",
-    data: { labels: featureLabels, datasets },
-    options: {
-      ...chartDefaults(),
-      plugins: { legend: { display: true, position: "top", labels: { color: "#7a8ba0", font: { size: 9 }, usePointStyle: true, pointStyle: "circle" } } },
-      scales: {
-        r: {
-          min: 0, max: 1,
-          grid: { color: "rgba(31,46,63,0.5)" },
-          angleLines: { color: "rgba(31,46,63,0.5)" },
-          pointLabels: { color: "#7a8ba0", font: { size: 9 } },
-          ticks: { display: false },
-        },
-      },
-    },
-  });
-}
-
-// 6. Publication Timeline (scatter/line)
-function renderTimelineChart(data) {
-  const ctx = document.getElementById("timelineChart").getContext("2d");
-  if (chartInstances.timeline) chartInstances.timeline.destroy();
-
-  const results = data.ai_signature_results
-    .filter(r => r.ranked_result.scraped_result.published_at)
-    .sort((a, b) => new Date(a.ranked_result.scraped_result.published_at) - new Date(b.ranked_result.scraped_result.published_at));
-
-  const labels = results.map(r => {
-    const d = new Date(r.ranked_result.scraped_result.published_at);
-    return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
-  });
-  const scores = results.map(r => r.ranked_result.composite_score);
-
-  const gradient = ctx.createLinearGradient(0, 0, 0, 220);
-  gradient.addColorStop(0, "rgba(255,215,0,0.2)");
-  gradient.addColorStop(1, "rgba(255,215,0,0)");
-
-  chartInstances.timeline = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [{
-        data: scores,
-        borderColor: "#ffd700",
-        backgroundColor: gradient,
-        fill: true,
-        tension: 0.3,
-        pointRadius: 5,
-        pointBackgroundColor: "#ffd700",
-        pointBorderColor: "#0a0e17",
-        pointBorderWidth: 2,
-        borderWidth: 2,
-      }],
-    },
-    options: {
-      ...chartDefaults(),
-      scales: {
-        x: { grid: { display: false }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-        y: { min: 0, max: 1, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-      },
-    },
-  });
-}
-
-// 7. Confidence (horizontal bar)
-function renderConfidenceChart(data) {
-  const ctx = document.getElementById("confidenceChart").getContext("2d");
-  if (chartInstances.confidence) chartInstances.confidence.destroy();
-
-  const results = data.ai_signature_results;
-  const labels = results.map(r => truncate(r.ranked_result.scraped_result.domain, 18));
-  const values = results.map(r => r.confidence);
-  const colors = values.map(v => `rgba(79,172,254,${0.4 + v * 0.6})`);
-
-  chartInstances.confidence = new Chart(ctx, {
-    type: "bar",
-    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 4, borderSkipped: false }] },
-    options: {
-      ...chartDefaults(),
-      indexAxis: "y",
-      scales: {
-        x: { min: 0, max: 1, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-        y: { grid: { display: false }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-      },
-    },
-  });
-}
-
-// 8. Burstiness vs Uniformity (scatter)
-function renderScatterChart(data) {
-  const ctx = document.getElementById("scatterChart").getContext("2d");
-  if (chartInstances.scatter) chartInstances.scatter.destroy();
-
-  const points = [];
-  data.ai_signature_results.forEach(r => {
-    const stat = r.detection_methods.find(m => m.method_name === "statistical");
-    if (stat && stat.raw_response && stat.raw_response.features) {
-      points.push({
-        x: stat.raw_response.features.burstiness_ai,
-        y: stat.raw_response.features.sentence_uniformity,
-      });
-    }
-  });
-
-  chartInstances.scatter = new Chart(ctx, {
-    type: "scatter",
-    data: {
-      datasets: [{
-        data: points,
-        backgroundColor: "rgba(255,107,157,0.7)",
-        pointRadius: 8,
-        pointHoverRadius: 11,
-        borderColor: "rgba(255,107,157,1)",
-        borderWidth: 1,
-      }],
-    },
-    options: {
-      ...chartDefaults(),
-      scales: {
-        x: { min: 0, max: 1, title: { display: true, text: "Burstiness", color: "#7a8ba0", font: { size: 10 } }, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-        y: { min: 0, max: 1, title: { display: true, text: "Uniformity", color: "#7a8ba0", font: { size: 10 } }, grid: { color: "rgba(31,46,63,0.5)" }, ticks: { color: "#7a8ba0", font: { size: 9 } } },
-      },
-    },
-  });
-}
-
-// ===== ARTICLES LIST =====
-function renderArticlesList(data) {
-  const container = document.getElementById("articlesList");
-  const results = [...data.ai_signature_results].sort((a, b) => b.ranked_result.composite_score - a.ranked_result.composite_score);
-
-  document.getElementById("articleCountBadge").textContent = `${results.length} sources`;
-
-  container.innerHTML = results.map((r, i) => {
-    const sr = r.ranked_result.scraped_result;
-    const rankClass = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
-    const botClass = r.is_ai_generated ? "bot" : "human";
-    const botLabel = r.is_ai_generated ? `AI (${(r.ensemble_score * 100).toFixed(0)}%)` : `Human (${(r.ensemble_score * 100).toFixed(0)}%)`;
-
-    return `
-      <div class="article-row" onclick="openSourceModal(${data.ai_signature_results.indexOf(r)})">
-        <div class="article-rank ${rankClass}">${i + 1}</div>
-        <div class="article-info">
-          <div class="article-title"><a href="${escapeHtml(sr.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escapeHtml(sr.title || sr.url)}</a></div>
-          <p class="article-snippet">${escapeHtml(sr.snippet || "")}</p>
-          <div class="article-meta">
-            <span class="meta-tag domain">${escapeHtml(sr.domain)}</span>
-            <span class="meta-tag type">${(sr.content_type || "unknown").replace("_", " ")}</span>
-            <span class="meta-tag ${botClass}">${botLabel}</span>
-            <span class="meta-tag similarity">Sim: ${r.ranked_result.similarity_score.toFixed(2)}</span>
-          </div>
+    <div class="nd-grid">
+      <div class="card">
+        <h3>Bot/AI vs organic engagement</h3>
+        ${authenticityBar(auth, inauth, unknown)}
+        <div class="legend">
+          <span><i class="dot organic"></i> Organic ${auth.toFixed(0)}%</span>
+          <span><i class="dot bot"></i> Bot/AI-driven ${inauth.toFixed(0)}%</span>
+          <span><i class="dot unknown"></i> Unknown ${unknown.toFixed(0)}%</span>
         </div>
+        <p class="muted">${escapeHtml(n.why_it_matters || "")}</p>
       </div>
-    `;
-  }).join("");
-}
 
-// ===== MODAL =====
-function openSourceModal(index) {
-  const r = reportData.ai_signature_results[index];
-  if (!r) return;
-
-  const sr = r.ranked_result.scraped_result;
-  const modal = document.getElementById("modal");
-  const title = document.getElementById("modalTitle");
-  const body = document.getElementById("modalBody");
-
-  title.textContent = sr.title || sr.domain;
-
-  const stat = r.detection_methods.find(m => m.method_name === "statistical");
-  const features = stat?.raw_response?.features || {};
-
-  body.innerHTML = `
-    <div class="modal-section">
-      <h4>Source Info</h4>
-      <div class="modal-kv"><span class="key">URL</span><span class="val"><a href="${escapeHtml(sr.url)}" target="_blank" style="color:var(--accent)">${escapeHtml(sr.url.slice(0, 60))}...</a></span></div>
-      <div class="modal-kv"><span class="key">Domain</span><span class="val">${escapeHtml(sr.domain)}</span></div>
-      <div class="modal-kv"><span class="key">Content Type</span><span class="val">${(sr.content_type || "unknown").replace("_", " ")}</span></div>
-      <div class="modal-kv"><span class="key">Published</span><span class="val">${sr.published_at ? new Date(sr.published_at).toLocaleDateString() : "Unknown"}</span></div>
-      <div class="modal-kv"><span class="key">Chronological Rank</span><span class="val">#${r.ranked_result.chronological_rank}</span></div>
-      <div class="modal-kv"><span class="key">Likely Original</span><span class="val ${r.ranked_result.is_likely_original ? 'green' : ''}">${r.ranked_result.is_likely_original ? "Yes ★" : "No"}</span></div>
-    </div>
-    <div class="modal-section">
-      <h4>Scoring</h4>
-      <div class="modal-kv"><span class="key">Similarity Score</span><span class="val">${r.ranked_result.similarity_score.toFixed(4)}</span></div>
-      <div class="modal-kv"><span class="key">Composite Score</span><span class="val">${r.ranked_result.composite_score.toFixed(4)}</span></div>
-      <div class="modal-kv"><span class="key">Ensemble (Bot) Score</span><span class="val ${r.ensemble_score >= 0.65 ? 'red' : r.ensemble_score >= 0.35 ? 'orange' : 'green'}">${r.ensemble_score.toFixed(3)}</span></div>
-      <div class="modal-kv"><span class="key">AI Generated?</span><span class="val ${r.is_ai_generated ? 'red' : 'green'}">${r.is_ai_generated ? "YES" : "NO"}</span></div>
-      <div class="modal-kv"><span class="key">Confidence</span><span class="val">${(r.confidence * 100).toFixed(0)}%</span></div>
-    </div>
-    <div class="modal-section">
-      <h4>Statistical Features</h4>
-      <div class="modal-kv"><span class="key">Sentence Uniformity</span><span class="val">${features.sentence_uniformity?.toFixed(3) ?? "N/A"}</span></div>
-      <div class="modal-kv"><span class="key">Burstiness (AI)</span><span class="val">${features.burstiness_ai?.toFixed(3) ?? "N/A"}</span></div>
-      <div class="modal-kv"><span class="key">Transition Density</span><span class="val">${features.transition_density_ai?.toFixed(3) ?? "N/A"}</span></div>
-      <div class="modal-kv"><span class="key">Hedging Density</span><span class="val">${features.hedging_density_ai?.toFixed(3) ?? "N/A"}</span></div>
-      <div class="modal-kv"><span class="key">Paragraph Homogeneity</span><span class="val">${features.paragraph_homogeneity?.toFixed(3) ?? "N/A"}</span></div>
-    </div>
-    <div class="modal-section">
-      <h4>Detection Methods</h4>
-      ${r.detection_methods.map(m => `
-        <div class="modal-kv">
-          <span class="key">${m.method_name}</span>
-          <span class="val ${m.error ? 'orange' : m.score !== null && m.score >= 0.65 ? 'red' : 'green'}">${m.error ? "Skipped" : m.score !== null ? m.score.toFixed(3) + " (" + (m.label || "?") + ")" : "N/A"}</span>
+      <div class="card">
+        <h3>Interaction breakdown</h3>
+        <div class="kv-list">
+          ${interactionRow("💬 Replies / comments", typeCounts.reply)}
+          ${interactionRow("🔁 Reposts / retweets", typeCounts.repost)}
+          ${interactionRow("❝ Quotes", typeCounts.quote)}
+          ${interactionRow("🫥 Subtweets (indirect)", typeCounts.subtweet)}
+          ${interactionRow("📝 Other posts", typeCounts.post)}
         </div>
-      `).join("")}
+        <p class="muted">${interactions.length.toLocaleString()} classified interactions</p>
+      </div>
     </div>
-    <div class="modal-section">
-      <h4>Explanation</h4>
-      <p style="font-size:0.85rem;color:var(--text-secondary);line-height:1.6">${escapeHtml(r.explanation)}</p>
+
+    <div class="card">
+      <h3>Origin / primary source</h3>
+      ${
+        primary
+          ? `<div class="origin">
+              <span class="badge badge-${(primary.source_type || "Unknown").toLowerCase()}">${
+              primary.source_type || "Unknown"
+            }</span>
+              <span class="muted">Confidence ${(
+                (primary.confidence || 0) * 100
+              ).toFixed(0)}%${
+              primary.first_seen_at
+                ? " · first seen " + formatDate(primary.first_seen_at)
+                : ""
+            }</span>
+              <div class="evidence">${(primary.evidence || [])
+                .map((e) => `<div>• ${escapeHtml(e)}</div>`)
+                .join("")}</div>
+            </div>`
+          : `<p class="muted">No primary source attribution available.</p>`
+      }
     </div>
+
+    <div class="card">
+      <h3>X / Twitter sources <span class="card-badge">${xSources.length}</span></h3>
+      <div class="source-list">
+        ${xSources.map(sourceRow).join("") || `<p class="muted">No X posts collected.</p>`}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Accounts interacting <span class="card-badge">${actors.length}</span></h3>
+      <div class="actor-list">
+        ${
+          actors.map(actorRow).join("") ||
+          `<p class="muted">No actor classifications yet.</p>`
+        }
+      </div>
+    </div>
+
+    ${
+      webSources.length
+        ? `<div class="card">
+            <h3>Supporting web sources <span class="card-badge">${webSources.length}</span></h3>
+            <div class="source-list">${webSources.map(sourceRow).join("")}</div>
+          </div>`
+        : ""
+    }
   `;
-
-  modal.classList.remove("hidden");
-  document.body.style.overflow = "hidden";
 }
 
-function closeModal() {
-  document.getElementById("modal").classList.add("hidden");
-  document.body.style.overflow = "";
+function interactionRow(label, count) {
+  return `<div class="kv"><span>${label}</span><strong>${(count || 0).toLocaleString()}</strong></div>`;
 }
 
-// ===== UTILITIES =====
-function escapeHtml(str) {
-  if (!str) return "";
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+function sourceRow(s) {
+  const a = s.author || {};
+  const url = s.url || s.canonical_url || "";
+  const eng = s.engagement || {};
+  const botPct = Math.round((a.bot_likelihood || 0) * 100);
+  return `
+  <div class="source-row">
+    <div class="source-author">
+      <div class="avatar">${escapeHtml((a.handle || a.display_name || "?").slice(0, 1).toUpperCase())}</div>
+      <div>
+        <div class="author-name">
+          ${escapeHtml(a.display_name || a.handle || "Unknown")}
+          ${a.verified ? '<span class="verified" title="Verified">✓</span>' : ""}
+        </div>
+        <div class="author-handle">${a.handle ? "@" + escapeHtml(a.handle) : ""} · ${formatReach(
+    a.followers_count
+  )} followers</div>
+      </div>
+      <span class="bot-tag ${botPct >= 65 ? "bot" : "human"}">${
+    botPct >= 65 ? "Bot-like" : "Likely human"
+  } ${botPct}%</span>
+    </div>
+    <p class="source-text">${escapeHtml(s.text || s.snippet || "")}</p>
+    <div class="source-meta">
+      ${url ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener">View on X ↗</a>` : ""}
+      <span>❤ ${num(eng.likes)}</span>
+      <span>🔁 ${num(eng.reposts)}</span>
+      <span>💬 ${num(eng.replies)}</span>
+      <span>❝ ${num(eng.quotes)}</span>
+      ${s.published_at ? `<span>${formatDate(s.published_at)}</span>` : ""}
+    </div>
+  </div>`;
 }
 
-function truncate(str, len) {
-  if (!str) return "";
-  return str.length > len ? str.slice(0, len) + "…" : str;
+function actorRow(a) {
+  const pct = Math.round((a.bot_score || 0) * 100);
+  return `
+  <div class="actor-row">
+    <span class="actor-id">${escapeHtml(a.account_id || "unknown")}</span>
+    <span class="bot-tag ${a.class === "Bot" ? "bot" : "human"}">${a.class || "Unknown"} ${pct}%</span>
+    <span class="actor-evidence muted">${escapeHtml((a.evidence || []).slice(0, 2).join("; "))}</span>
+  </div>`;
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ---------- utils ----------
+function num(v) {
+  if (v === undefined || v === null) return 0;
+  const n = typeof v === "number" ? v : parseInt(v, 10);
+  return isNaN(n) ? 0 : n.toLocaleString();
+}
 
-// ===== EVENT LISTENERS =====
-document.getElementById("queryInput").addEventListener("keydown", e => { if (e.key === "Enter") startScrape(); });
-document.getElementById("queryInputTop").addEventListener("keydown", e => { if (e.key === "Enter") startScrapeFromTop(); });
-document.getElementById("modal").addEventListener("click", e => { if (e.target === e.currentTarget) closeModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+function formatDate(s) {
+  try {
+    return new Date(s).toLocaleString();
+  } catch (_) {
+    return s;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}

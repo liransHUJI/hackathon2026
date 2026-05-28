@@ -11,6 +11,7 @@ import (
 
 	"github.com/hnweb/provenance/internal/models"
 	"github.com/hnweb/provenance/internal/providers"
+	"github.com/hnweb/provenance/internal/scoring"
 )
 
 func providerSupports(provider providers.CampaignProvider, target string) bool {
@@ -50,7 +51,12 @@ func dedupeInteractions(interactions []models.InteractionEvent) []models.Interac
 	seen := map[string]bool{}
 	out := []models.InteractionEvent{}
 	for _, interaction := range interactions {
-		key := interaction.InteractionID
+		key := ""
+		if interaction.Metadata != nil {
+			if child, ok := interaction.Metadata["child_source_id"].(string); ok {
+				key = child
+			}
+		}
 		if key == "" {
 			key = fmt.Sprintf("%s:%s:%s", interaction.SourceID, interaction.AccountID, interaction.InteractionType)
 		}
@@ -79,6 +85,106 @@ func dedupeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+type narrativeBucket struct {
+	repText   string
+	repSource models.SourceItem
+	hashtags  map[string]bool
+	sources   []models.SourceItem
+	sourceIDs []string
+	first     *time.Time
+	last      *time.Time
+	relevance float64
+}
+
+// matchBucket greedily assigns a source to an existing narrative when it shares a hashtag or is
+// lexically similar to the bucket's representative text; otherwise it returns nil for a new cluster.
+func matchBucket(buckets []*narrativeBucket, source models.SourceItem, text string) *narrativeBucket {
+	for _, bucket := range buckets {
+		if sharesAnyHashtag(bucket.hashtags, source.Hashtags) {
+			return bucket
+		}
+		if scoring.LexicalSimilarity(bucket.repText, text) >= 0.32 {
+			return bucket
+		}
+	}
+	return nil
+}
+
+func sharesAnyHashtag(have map[string]bool, tags []string) bool {
+	for _, tag := range tags {
+		if have[strings.ToLower(tag)] {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedHashtags(have map[string]bool, limit int) []string {
+	tags := make([]string, 0, len(have))
+	for tag := range have {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	if limit > 0 && len(tags) > limit {
+		tags = tags[:limit]
+	}
+	return tags
+}
+
+// narrativeTitleAndSummary builds a human-readable narrative title and summary from a cluster.
+// Titles are derived deterministically from the representative post; Gemini is not required.
+func narrativeTitleAndSummary(bucket *narrativeBucket) (string, string) {
+	clean := cleanTweetText(bucket.repText)
+	title := firstSentence(clean)
+	if len([]rune(title)) > 90 {
+		title = strings.TrimSpace(string([]rune(title)[:90])) + "..."
+	}
+	tags := sortedHashtags(bucket.hashtags, 3)
+	if strings.TrimSpace(title) == "" {
+		if len(tags) > 0 {
+			title = "Conversation around " + strings.Join(tags, " ")
+		} else {
+			title = "Emerging X narrative"
+		}
+	}
+	summary := "Discussion spreading on X"
+	if handle := strings.TrimSpace(bucket.repSource.Author.Handle); handle != "" {
+		summary = "Discussion involving @" + handle
+	}
+	if len(tags) > 0 {
+		summary += " around " + strings.Join(tags, ", ")
+	}
+	if snippet := truncateText(clean, 160); snippet != "" {
+		summary += `: "` + snippet + `"`
+	}
+	return title, summary
+}
+
+func cleanTweetText(text string) string {
+	fields := strings.Fields(text)
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if strings.HasPrefix(field, "http://") || strings.HasPrefix(field, "https://") {
+			continue
+		}
+		out = append(out, field)
+	}
+	return strings.Join(out, " ")
+}
+
+func firstSentence(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, sep := range []string{". ", "! ", "? ", "\n"} {
+		if idx := strings.Index(text, sep); idx > 12 {
+			return strings.TrimSpace(text[:idx])
+		}
+	}
+	return text
 }
 
 func narrativeKey(text string) string {

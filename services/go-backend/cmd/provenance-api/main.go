@@ -56,8 +56,8 @@ func main() {
 	defer natsClient.Close()
 
 	registry := providers.NewRegistry()
-	registry.Register(brightdata.NewXWithDataset(cfg.BrightDataAPIKey, cfg.BrightDataXDatasetID, cfg.BrightDataBudgetUSD))
-	registry.Register(brightdata.NewWebWithUnlocker(cfg.BrightDataAPIKey, cfg.BrightDataUnlockerZone, cfg.BrightDataBudgetUSD))
+	registry.Register(brightdata.NewXWithDataset(cfg.BrightDataAPIKey, cfg.BrightDataXDatasetID, cfg.BrightDataSERPZone, cfg.BrightDataBudgetUSD))
+	registry.Register(brightdata.NewWebWithUnlocker(cfg.BrightDataAPIKey, cfg.BrightDataUnlockerZone, cfg.BrightDataSERPZone, cfg.BrightDataBudgetUSD))
 	registry.Register(basicweb.New(cfg.BasicWebDomainRPS))
 
 	geminiClient := gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiFastModel)

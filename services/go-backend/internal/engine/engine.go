@@ -255,64 +255,62 @@ func (e *Engine) collectionTargets(campaign models.CampaignProfile) []models.Col
 }
 
 func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []models.SourceItem) []models.NarrativeCluster {
-	type bucket struct {
-		key       string
-		text      string
-		sourceIDs []string
-		first     *time.Time
-		last      *time.Time
-		relevance float64
-	}
-	buckets := map[string]*bucket{}
-	for _, source := range sources {
+	buckets := []*narrativeBucket{}
+	for idx := range sources {
+		source := sources[idx]
 		text := firstNonEmpty(source.Text, source.Title, source.Snippet)
 		if text == "" {
 			continue
 		}
-		key := narrativeKey(text)
-		if key == "" {
-			continue
+		match := matchBucket(buckets, source, text)
+		if match == nil {
+			match = &narrativeBucket{repText: text, repSource: source, hashtags: map[string]bool{}}
+			buckets = append(buckets, match)
 		}
-		current, ok := buckets[key]
-		if !ok {
-			current = &bucket{key: key, text: summarizeNarrative(text), relevance: scoring.Relevance(campaign, text)}
-			buckets[key] = current
+		match.sources = append(match.sources, source)
+		match.sourceIDs = append(match.sourceIDs, source.SourceID)
+		for _, tag := range source.Hashtags {
+			match.hashtags[strings.ToLower(tag)] = true
 		}
-		current.sourceIDs = append(current.sourceIDs, source.SourceID)
+		if relevance := scoring.Relevance(campaign, text); relevance > match.relevance {
+			match.relevance = relevance
+		}
+		// Promote the most influential post as the representative for titling.
+		if source.SourceType == models.SourceTypeXPost && source.Author.FollowersCount > match.repSource.Author.FollowersCount {
+			match.repText = text
+			match.repSource = source
+		}
 		if source.PublishedAt != nil {
-			if current.first == nil || source.PublishedAt.Before(*current.first) {
+			if match.first == nil || source.PublishedAt.Before(*match.first) {
 				t := *source.PublishedAt
-				current.first = &t
+				match.first = &t
 			}
-			if current.last == nil || source.PublishedAt.After(*current.last) {
+			if match.last == nil || source.PublishedAt.After(*match.last) {
 				t := *source.PublishedAt
-				current.last = &t
+				match.last = &t
 			}
 		}
 	}
-	list := []*bucket{}
-	for _, bucket := range buckets {
-		list = append(list, bucket)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		return len(list[i].sourceIDs)*100+int(list[i].relevance*100) > len(list[j].sourceIDs)*100+int(list[j].relevance*100)
+	sort.Slice(buckets, func(i, j int) bool {
+		return len(buckets[i].sourceIDs)*100+int(buckets[i].relevance*100) > len(buckets[j].sourceIDs)*100+int(buckets[j].relevance*100)
 	})
 	limit := campaign.CrawlBudget.TopNarratives
 	if limit <= 0 {
 		limit = e.cfg.DefaultTopNarratives
 	}
-	if len(list) > limit {
-		list = list[:limit]
+	if len(buckets) > limit {
+		buckets = buckets[:limit]
 	}
 	now := time.Now().UTC()
-	narratives := make([]models.NarrativeCluster, 0, len(list))
-	for _, bucket := range list {
+	narratives := make([]models.NarrativeCluster, 0, len(buckets))
+	for _, bucket := range buckets {
+		title, summary := narrativeTitleAndSummary(bucket)
 		narratives = append(narratives, models.NarrativeCluster{
 			NarrativeID:           uuid.NewString(),
 			CampaignID:            campaign.CampaignID,
-			Narrative:             bucket.text,
-			Summary:               "People are discussing: " + bucket.text,
-			CanonicalClaims:       []string{bucket.text},
+			Narrative:             title,
+			Summary:               summary,
+			CanonicalClaims:       []string{summarizeNarrative(bucket.repText)},
 			SourceIDs:             dedupeStrings(bucket.sourceIDs),
 			FirstSeenAt:           bucket.first,
 			LastSeenAt:            bucket.last,
@@ -331,16 +329,53 @@ func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []m
 func (e *Engine) harvestInteractions(ctx context.Context, sources []models.SourceItem, target int) ([]models.InteractionEvent, []models.ProviderFailure) {
 	interactions := []models.InteractionEvent{}
 	failures := []models.ProviderFailure{}
+	if len(sources) == 0 {
+		return interactions, failures
+	}
+	origin := chooseOrigin(sources)
+
+	// 1. Sibling X posts in the cluster are themselves interactions (reply/quote/repost/subtweet)
+	//    relative to the origin post. This is free and needs no extra provider calls.
 	for _, source := range sources {
+		if source.SourceType != models.SourceTypeXPost {
+			continue
+		}
+		itype, include := scoring.ClassifyXInteraction(origin, source)
+		if !include {
+			continue
+		}
+		accountID := source.Author.AccountID
+		if accountID == "" {
+			accountID = source.Author.Handle
+		}
+		if accountID == "" {
+			continue
+		}
+		interactions = append(interactions, models.InteractionEvent{
+			InteractionID:      uuid.NewString(),
+			SourceID:           origin.SourceID,
+			AccountID:          accountID,
+			InteractionType:    itype,
+			OccurredAt:         interactionTime(source),
+			EngagementSnapshot: source.Engagement,
+			ImportanceScore:    source.Author.InfluenceScore,
+			Metadata: map[string]any{
+				"child_source_id": source.SourceID,
+				"handle":          source.Author.Handle,
+				"text":            truncateText(source.Text, 280),
+				"author":          source.Author,
+			},
+		})
+	}
+
+	// 2. Fetch additional conversation (replies/quotes/reposts) for the origin from the live
+	//    provider, bounded by the remaining interaction budget.
+	if remaining := target - len(interactions); remaining > 0 && origin.Provider != "" {
 		for _, provider := range e.registry.CampaignProviders() {
-			if provider.ID() != source.Provider {
+			if provider.ID() != origin.Provider {
 				continue
 			}
-			remaining := target - len(interactions)
-			if remaining <= 0 {
-				return dedupeInteractions(interactions), failures
-			}
-			events, err := provider.FetchInteractions(ctx, source, remaining)
+			events, err := provider.FetchInteractions(ctx, origin, remaining)
 			if err != nil {
 				failures = append(failures, failure(provider.ID(), err))
 				continue
@@ -348,7 +383,51 @@ func (e *Engine) harvestInteractions(ctx context.Context, sources []models.Sourc
 			interactions = append(interactions, events...)
 		}
 	}
-	return dedupeInteractions(interactions), failures
+
+	interactions = dedupeInteractions(interactions)
+	if len(interactions) > target && target > 0 {
+		interactions = interactions[:target]
+	}
+	return interactions, failures
+}
+
+// chooseOrigin selects the most likely origin post of a narrative: the most-followed X account,
+// falling back to the earliest source, then the first.
+func chooseOrigin(sources []models.SourceItem) models.SourceItem {
+	var best *models.SourceItem
+	for idx := range sources {
+		if sources[idx].SourceType != models.SourceTypeXPost {
+			continue
+		}
+		if best == nil || sources[idx].Author.FollowersCount > best.Author.FollowersCount {
+			best = &sources[idx]
+		}
+	}
+	if best != nil {
+		return *best
+	}
+	return sources[0]
+}
+
+func interactionTime(source models.SourceItem) time.Time {
+	if source.PublishedAt != nil {
+		return *source.PublishedAt
+	}
+	if source.IndexedAt != nil {
+		return *source.IndexedAt
+	}
+	if !source.CollectedAt.IsZero() {
+		return source.CollectedAt
+	}
+	return time.Now().UTC()
+}
+
+func truncateText(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit])
 }
 
 func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID string, sources []models.SourceItem, interactions []models.InteractionEvent) []models.ActorClassification {
@@ -356,6 +435,16 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	for _, source := range sources {
 		if source.Author.AccountID != "" {
 			accounts[source.Author.AccountID] = source.Author
+		}
+	}
+	for _, interaction := range interactions {
+		if interaction.Metadata == nil {
+			continue
+		}
+		if profile, ok := interaction.Metadata["author"].(models.AccountProfile); ok && profile.AccountID != "" {
+			if _, exists := accounts[profile.AccountID]; !exists {
+				accounts[profile.AccountID] = profile
+			}
 		}
 	}
 	byAccount := map[string][]models.InteractionEvent{}

@@ -2,6 +2,8 @@ package searchplan
 
 import (
 	"context"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/hnweb/provenance/internal/config"
@@ -48,6 +50,26 @@ func (p *Processor) Process(set models.PermutationSet) models.SourceSearchPlan {
 
 	targets := make([]models.SourceTarget, 0, len(set.Permutations)*3+len(set.URLTerms))
 	for _, urlTerm := range set.URLTerms {
+		if isXStatusURL(urlTerm) {
+			targets = append(targets, models.SourceTarget{
+				Provider:       "brightdata_x",
+				SourceTypes:    []string{"x_post"},
+				Query:          urlTerm,
+				MaxResults:     1,
+				Priority:       11,
+				SearchStrategy: "direct_x_status_url",
+			})
+		}
+		if p.cfg.BrightDataUnlockerZone != "" {
+			targets = append(targets, models.SourceTarget{
+				Provider:       "brightdata_web",
+				SourceTypes:    []string{"web_article"},
+				Query:          urlTerm,
+				MaxResults:     1,
+				Priority:       10,
+				SearchStrategy: "direct_url_unlocker",
+			})
+		}
 		targets = append(targets, models.SourceTarget{
 			Provider:       "basic_web",
 			SourceTypes:    []string{"web_article"},
@@ -58,24 +80,16 @@ func (p *Processor) Process(set models.PermutationSet) models.SourceSearchPlan {
 		})
 	}
 	for idx, perm := range set.Permutations {
-		if idx < max(1, len(set.Permutations)/2) {
+		if p.cfg.BrightDataSERPZone != "" {
 			targets = append(targets, models.SourceTarget{
-				Provider:       "brightdata_x",
-				SourceTypes:    []string{"x_post"},
+				Provider:       "brightdata_web",
+				SourceTypes:    []string{"web_article", "search_result"},
 				Query:          perm.Text,
-				MaxResults:     max(1, maxX/max(1, len(set.Permutations))),
-				Priority:       10 - min(idx, 9),
+				MaxResults:     max(1, maxWeb/max(1, len(set.Permutations))),
+				Priority:       8 - min(idx, 7),
 				SearchStrategy: perm.Strategy,
 			})
 		}
-		targets = append(targets, models.SourceTarget{
-			Provider:       "brightdata_web",
-			SourceTypes:    []string{"web_article", "search_result"},
-			Query:          perm.Text,
-			MaxResults:     max(1, maxWeb/max(1, len(set.Permutations))),
-			Priority:       8 - min(idx, 7),
-			SearchStrategy: perm.Strategy,
-		})
 		targets = append(targets, models.SourceTarget{
 			Provider:       "basic_web",
 			SourceTypes:    []string{"web_article", "search_result"},
@@ -95,4 +109,17 @@ func (p *Processor) Process(set models.PermutationSet) models.SourceSearchPlan {
 		CreatedAt:            time.Now().UTC(),
 		ProviderFailures:     set.ProviderFailures,
 	}
+}
+
+func isXStatusURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if host != "x.com" && host != "twitter.com" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	return len(parts) >= 3 && parts[1] == "status" && parts[2] != ""
 }
