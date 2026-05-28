@@ -14,7 +14,17 @@ import (
 	"github.com/hnweb/provenance/internal/config"
 	"github.com/hnweb/provenance/internal/db"
 	"github.com/hnweb/provenance/internal/engine"
+	"github.com/hnweb/provenance/internal/llm/gemini"
 	js "github.com/hnweb/provenance/internal/nats"
+	"github.com/hnweb/provenance/internal/pipeline/aidetect"
+	"github.com/hnweb/provenance/internal/pipeline/enrich"
+	"github.com/hnweb/provenance/internal/pipeline/experts"
+	"github.com/hnweb/provenance/internal/pipeline/finalize"
+	"github.com/hnweb/provenance/internal/pipeline/normalize"
+	"github.com/hnweb/provenance/internal/pipeline/rank"
+	"github.com/hnweb/provenance/internal/pipeline/search"
+	"github.com/hnweb/provenance/internal/pipeline/searchplan"
+	"github.com/hnweb/provenance/internal/pipeline/semantic"
 	"github.com/hnweb/provenance/internal/providers"
 	"github.com/hnweb/provenance/internal/providers/basicweb"
 	"github.com/hnweb/provenance/internal/providers/brightdata"
@@ -50,6 +60,12 @@ func main() {
 	registry.Register(brightdata.NewWebWithUnlocker(cfg.BrightDataAPIKey, cfg.BrightDataUnlockerZone, cfg.BrightDataBudgetUSD))
 	registry.Register(basicweb.New())
 
+	geminiClient := gemini.New(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiFastModel)
+	if err := startProvenanceWorkers(ctx, cfg, store, natsClient, registry, geminiClient, logger); err != nil {
+		logger.Error("start provenance workers", "error", err)
+		os.Exit(1)
+	}
+
 	engineService := engine.New(cfg, store, registry)
 	go retentionLoop(ctx, store, logger)
 	go scheduler.New(cfg, engineService, logger).Start(ctx)
@@ -72,6 +88,36 @@ func main() {
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
 	logger.Info("shutdown complete")
+}
+
+func startProvenanceWorkers(
+	ctx context.Context,
+	cfg config.Config,
+	store *db.Store,
+	natsClient *js.Client,
+	registry *providers.Registry,
+	geminiClient *gemini.Client,
+	logger *slog.Logger,
+) error {
+	deps := js.WorkerDependencies{NATS: natsClient, Store: store, Logger: logger}
+	workers := []*js.Worker{
+		js.NewWorker(deps, js.SubjectNormalize, "provenance-normalize", normalize.New(cfg, store, natsClient).Handle),
+		js.NewWorker(deps, js.SubjectSemantic, "provenance-semantic", semantic.New(cfg, store, natsClient, geminiClient).Handle),
+		js.NewWorker(deps, js.SubjectPlan, "provenance-search-plan", searchplan.New(cfg, store, natsClient).Handle),
+		js.NewWorker(deps, js.SubjectSearch, "provenance-search", search.New(store, natsClient, registry).Handle),
+		js.NewWorker(deps, js.SubjectEnrich, "provenance-enrich", enrich.New(store, natsClient).Handle),
+		js.NewWorker(deps, js.SubjectRank, "provenance-rank", rank.New(cfg, store, natsClient).Handle),
+		js.NewWorker(deps, js.SubjectAIDetect, "provenance-ai-detect", aidetect.New(cfg, store, natsClient, geminiClient).Handle),
+		js.NewWorker(deps, js.SubjectExperts, "provenance-experts", experts.New(store, natsClient, geminiClient).Handle),
+		js.NewWorker(deps, js.SubjectFinalize, "provenance-finalize", finalize.New(cfg, store).Handle),
+	}
+	for _, worker := range workers {
+		if err := worker.Start(ctx); err != nil {
+			return err
+		}
+	}
+	logger.Info("provenance workers started", "count", len(workers))
+	return nil
 }
 
 func retentionLoop(ctx context.Context, store *db.Store, logger *slog.Logger) {

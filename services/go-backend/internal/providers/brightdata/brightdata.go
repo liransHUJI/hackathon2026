@@ -69,21 +69,51 @@ func (p *Provider) Capabilities() providers.ProviderCapabilities {
 }
 
 func (p *Provider) Search(ctx context.Context, query providers.SourceQuery) ([]models.SourceResult, error) {
-	if err := p.ensureAvailable(0.001); err != nil {
+	target := models.CollectionTarget{
+		CampaignID: query.ReportID,
+		Query:      query.Query,
+		Source:     query.Source,
+		MaxResults: query.MaxResults,
+	}
+	var (
+		items []models.SourceItem
+		err   error
+	)
+	if p.id == "brightdata_x" {
+		items, err = p.collectDataset(ctx, target)
+	} else {
+		items, err = p.collectWeb(ctx, target)
+	}
+	if err != nil {
 		return nil, err
 	}
-	_ = ctx
-	_ = query
-	return nil, errors.New("bright data API endpoint mapping is not configured for this MVP")
+	results := make([]models.SourceResult, 0, len(items))
+	for _, item := range items {
+		result := sourceItemToResult(item)
+		result.QueryUsed = query.Query
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 func (p *Provider) Fetch(ctx context.Context, ref providers.SourceRef) (*models.SourceResult, error) {
-	if err := p.ensureAvailable(0.002); err != nil {
+	if strings.TrimSpace(ref.URL) == "" {
+		return nil, errors.New("bright data fetch requires a URL")
+	}
+	items, err := p.collectWeb(ctx, models.CollectionTarget{
+		Query:      ref.URL,
+		Source:     p.id,
+		MaxResults: 1,
+	})
+	if err != nil {
 		return nil, err
 	}
-	_ = ctx
-	_ = ref
-	return nil, errors.New("bright data fetch endpoint mapping is not configured for this MVP")
+	if len(items) == 0 {
+		return nil, fmt.Errorf("%w: bright data fetch returned no result", providers.ErrUnavailable)
+	}
+	result := sourceItemToResult(items[0])
+	result.QueryUsed = ref.URL
+	return &result, nil
 }
 
 func (p *Provider) Collect(ctx context.Context, target models.CollectionTarget) ([]models.SourceItem, error) {
@@ -352,6 +382,50 @@ func (p *Provider) mapDatasetRows(rows []map[string]any, target models.Collectio
 	return items
 }
 
+func sourceItemToResult(item models.SourceItem) models.SourceResult {
+	title := item.Title
+	if strings.TrimSpace(title) == "" {
+		title = firstLine(item.Text)
+	}
+	fullText := item.Text
+	if strings.TrimSpace(fullText) == "" {
+		fullText = item.Snippet
+	}
+	now := time.Now().UTC()
+	scrapedAt := item.CollectedAt
+	if scrapedAt.IsZero() {
+		scrapedAt = now
+	}
+	return models.SourceResult{
+		SourceID:       firstNonEmptyString(item.SourceID, uuid.NewString()),
+		GlobalDedupKey: firstNonEmptyString(item.GlobalDedupKey, item.Provider+":"+stableKey(firstNonEmptyString(firstNonEmpty(item.URL, item.CanonicalURL), item.Text))),
+		SourceType:     item.SourceType,
+		Provider:       item.Provider,
+		URL:            item.URL,
+		CanonicalURL:   item.CanonicalURL,
+		Title:          &title,
+		Snippet:        firstNonEmptyString(item.Snippet, truncate(fullText, 280)),
+		FullText:       &fullText,
+		AuthorName:     stringPtrIfNotEmpty(item.Author.DisplayName),
+		AuthorHandle:   stringPtrIfNotEmpty(item.Author.Handle),
+		AuthorURL:      item.Author.ProfileURL,
+		PublishedAt:    item.PublishedAt,
+		IndexedAt:      item.IndexedAt,
+		ScrapedAt:      scrapedAt,
+		Engagement:     item.Engagement,
+		SourceMetadata: map[string]any{
+			"language":         item.Language,
+			"collection_query": item.CollectionQuery,
+			"linked_urls":      item.LinkedURLs,
+			"hashtags":         item.Hashtags,
+		},
+		RawPayloadRef:      item.RawPayloadRef,
+		QueryUsed:          item.CollectionQuery,
+		AvailabilityStatus: item.AvailabilityStatus,
+		Error:              item.Error,
+	}
+}
+
 func (p *Provider) ensureAvailable(estimatedCost float64) error {
 	if p.apiKey == "" {
 		return fmt.Errorf("%w: %s requires BRIGHTDATA_API_KEY", providers.ErrUnavailable, p.id)
@@ -455,6 +529,14 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return uuid.NewString()
+}
+
+func stringPtrIfNotEmpty(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func firstTime(values ...any) time.Time {

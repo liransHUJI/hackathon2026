@@ -17,7 +17,7 @@ services:
 
   nats:
     image: nats:2.10-alpine
-    command: ["-js", "-sd", "/data"]
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"
@@ -31,8 +31,8 @@ services:
 
   backend:
     build:
-      context: ./services/go-backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/go-backend/Dockerfile
     environment:
       HTTP_ADDR: ":8080"
       DATABASE_URL: "postgres://provenance:provenance@postgres:5432/provenance?sslmode=disable"
@@ -41,7 +41,7 @@ services:
       DEFAULT_TOP_NARRATIVES: "20"
       INTERACTIONS_PER_NARRATIVE: "2000"
       CRAWL_INTERVAL_SECONDS: "900"
-      GEMINI_API_KEY: "AIzaSyB9wQx2TbXcgmWnRjfmBSM4wUpks4Oyk0A"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
       BRIGHTDATA_API_KEY: "${BRIGHTDATA_API_KEY:-}"
       BRIGHTDATA_UNLOCKER_ZONE: "${BRIGHTDATA_UNLOCKER_ZONE:-}"
       BRIGHTDATA_X_DATASET_ID: "${BRIGHTDATA_X_DATASET_ID:-}"

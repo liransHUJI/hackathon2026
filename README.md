@@ -1,37 +1,32 @@
-# Provenance Monorepo
+# Provenance
 
-This repository contains two related Provenance services:
+Go backend for provenance analysis and narrative intelligence.
 
-- `services/python-pipeline/` - the original async Python provenance pipeline.
-- `services/go-backend/` - the Go HTTP API, NATS JetStream workers, and Postgres backend.
-- `docs/` - shared project specs, including the Go/NATS rewrite spec.
+The project runs as a single Go service backed by Postgres and NATS JetStream:
 
-## Run the Go Backend
+- `services/go-backend/` - HTTP API, provenance pipeline workers, campaign/narrative engine, providers, migrations, and scheduler.
+- `public/` - DataScope frontend served by the Go backend.
+- `docs/` - architecture and product specs.
+
+## Run
 
 ```bash
-cd services/go-backend
-cp .env.example .env
+cp services/go-backend/.env.example services/go-backend/.env
 docker compose up --build
 ```
 
-The API listens on `http://localhost:8080` by default. The Compose stack also starts Postgres and
-NATS with JetStream enabled.
+The API and frontend listen on `http://localhost:8080`. The Compose stack also starts Postgres and NATS with JetStream enabled.
 
-For local Go checks:
+## Local Checks
 
 ```bash
 cd services/go-backend
 go test ./...
 ```
 
-## Run the Python Pipeline
+## Main APIs
 
-```bash
-cd services/python-pipeline
-python -m venv .venv
-pip install -e ".[dev]"
-cp .env.example .env
-python run_demo.py --headline "Prime Minister announces retirement"
-```
-
-See `services/python-pipeline/README.md` for the legacy pipeline details.
+- `POST /v1/reports` submits a headline, claim, URL, or text for provenance analysis.
+- `GET /v1/jobs/{job_id}` polls provenance pipeline status.
+- `GET /v1/reports/{report_id}` returns the final provenance report.
+- `POST /v1/campaigns` and related `/v1/campaigns/*` routes manage narrative intelligence campaigns.

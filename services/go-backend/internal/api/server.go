@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +44,12 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
+	s.mux.HandleFunc("POST /v1/reports", s.submitReport)
+	s.mux.HandleFunc("POST /v1/reports/bulk", s.submitBulk)
+	s.mux.HandleFunc("GET /v1/reports", s.listReports)
+	s.mux.HandleFunc("GET /v1/reports/{report_id}", s.getReport)
+	s.mux.HandleFunc("GET /v1/jobs/{job_id}", s.getJob)
+	s.mux.HandleFunc("POST /v1/jobs/{job_id}/cancel", s.cancelJob)
 	s.mux.HandleFunc("POST /v1/campaigns", s.createCampaign)
 	s.mux.HandleFunc("GET /v1/campaigns", s.listCampaigns)
 	s.mux.HandleFunc("GET /v1/campaigns/{campaign_id}", s.getCampaign)
@@ -60,6 +68,23 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/narratives/{narrative_id}/actors", s.getNarrativeActors)
 	s.mux.HandleFunc("GET /v1/campaigns/{campaign_id}/alerts", s.listAlerts)
 	s.mux.HandleFunc("POST /v1/alerts/{alert_id}/ack", s.ackAlert)
+	s.mux.Handle("GET /", http.FileServer(http.Dir(staticDir())))
+}
+
+func staticDir() string {
+	candidates := []string{
+		"public",
+		filepath.Join("..", "..", "public"),
+		filepath.Join("..", "public"),
+		filepath.Join("services", "go-backend", "public"),
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return "public"
 }
 
 func (s *Server) createCampaign(w http.ResponseWriter, r *http.Request) {

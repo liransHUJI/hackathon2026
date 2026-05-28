@@ -22,6 +22,11 @@ type Processor struct {
 	gemini *gemini.Client
 }
 
+const (
+	minTextChars = 240
+	aiThreshold  = 0.65
+)
+
 func New(cfg config.Config, store *db.Store, nats *js.Client, client *gemini.Client) *Processor {
 	return &Processor{cfg: cfg, store: store, nats: nats, gemini: client}
 }
@@ -65,7 +70,7 @@ func (p *Processor) Process(ctx context.Context, set models.AnalyzedSet) models.
 			RankedResult:     ranked,
 			DetectionMethods: methods,
 			EnsembleScore:    ensemble,
-			IsAIGenerated:    ensemble >= threshold(len(strings.Fields(text)), methods),
+			IsAIGenerated:    ensemble >= aiThreshold,
 			Confidence:       confidence,
 			Explanation:      "AI score combines free local detectors and the optional Gemini judge; unavailable providers are excluded from the ensemble.",
 		})
@@ -80,19 +85,28 @@ func (p *Processor) Process(ctx context.Context, set models.AnalyzedSet) models.
 
 func statisticalMethod(text string) models.DetectionMethod {
 	words := normalizedWords(text)
-	score := 0.25
-	if len(words) > 40 {
-		score += 0.1
+	if len([]rune(strings.TrimSpace(text))) < minTextChars || len(words) < 35 {
+		return models.DetectionMethod{Name: "statistical", Score: 0.5, Weight: 0.35, Succeeded: true, Explanation: "Text is short, so the statistical detector returns a neutral score."}
 	}
-	if strings.Contains(strings.ToLower(text), "furthermore") || strings.Contains(strings.ToLower(text), "it is important") {
-		score += 0.2
-	}
-	return models.DetectionMethod{Name: "statistical_linguistic", Score: pipeline.Clamp01(score), Weight: 0.35, Succeeded: true, Explanation: "Local heuristic considers length, repetition, and common AI-like transition phrases."}
+	sentenceLens := sentenceLengths(text)
+	paragraphLens := paragraphLengths(text)
+	uniformSentences := pipeline.Clamp01(1 - coefficientOfVariation(sentenceLens)/0.85)
+	burst := burstiness(sentenceLens)
+	lowBurstiness := pipeline.Clamp01((0.25 - burst) / 0.50)
+	transitionDensity := phraseDensity(text, transitionPhrases, len(words))
+	hedgingDensity := phraseDensity(text, hedgingPhrases, len(words))
+	paragraphHomogeneity := pipeline.Clamp01(1 - coefficientOfVariation(paragraphLens)/0.90)
+	score := 0.28*uniformSentences +
+		0.22*lowBurstiness +
+		0.20*pipeline.Clamp01(transitionDensity/3.0) +
+		0.15*pipeline.Clamp01(hedgingDensity/2.5) +
+		0.15*paragraphHomogeneity
+	return models.DetectionMethod{Name: "statistical", Score: pipeline.Clamp01(score), Weight: 0.35, Succeeded: true, Explanation: "Local statistical detector checks sentence uniformity, burstiness, transition density, hedging, and paragraph homogeneity."}
 }
 
 func stylometricMethod(text string) models.DetectionMethod {
 	words := normalizedWords(text)
-	if len(words) < 20 {
+	if len([]rune(strings.TrimSpace(text))) < minTextChars || len(words) < 35 {
 		return models.DetectionMethod{Name: "stylometric", Score: 0.5, Weight: 0.25, Succeeded: true, Explanation: "Text is short, so the local stylometry score is neutral."}
 	}
 	sentenceLens := sentenceLengths(text)
@@ -101,33 +115,28 @@ func stylometricMethod(text string) models.DetectionMethod {
 	sentenceRegularity := pipeline.Clamp01(1 - coefficientOfVariation(sentenceLens)/0.65)
 	wordUniformity := pipeline.Clamp01(1 - coefficientOfVariation(wordLengths(words))/0.55)
 	openingUniformity := repeatedOpeningRatio(sentences(text), 2)
-	score := 0.30*lexicalUniformity + 0.30*sentenceRegularity + 0.20*wordUniformity + 0.20*openingUniformity
-	return models.DetectionMethod{Name: "stylometric", Score: pipeline.Clamp01(score), Weight: 0.25, Succeeded: true, Explanation: "Local stylometry checks lexical diversity, sentence regularity, word-length variance, and repeated openings."}
+	punctuationFlatness := punctuationFlatness(text, len(words))
+	score := 0.30*lexicalUniformity +
+		0.15*wordUniformity +
+		0.30*sentenceRegularity +
+		0.15*openingUniformity +
+		0.10*punctuationFlatness
+	return models.DetectionMethod{Name: "stylometric", Score: pipeline.Clamp01(score), Weight: 0.25, Succeeded: true, Explanation: "Local stylometry checks lexical diversity, word and sentence regularity, repeated openings, and punctuation flatness."}
 }
 
 func templateRepetitionMethod(text string) models.DetectionMethod {
 	words := normalizedWords(text)
-	if len(words) < 20 {
+	if len([]rune(strings.TrimSpace(text))) < minTextChars || len(words) < 35 {
 		return models.DetectionMethod{Name: "template_repetition", Score: 0.5, Weight: 0.20, Succeeded: true, Explanation: "Text is short, so the local repetition score is neutral."}
 	}
-	lower := strings.ToLower(text)
-	phraseHits := 0
-	for _, phrase := range []string{
-		"it is important to note",
-		"it is worth noting",
-		"in today's rapidly evolving",
-		"the broader implications",
-		"it remains to be seen",
-		"this underscores",
-	} {
-		phraseHits += strings.Count(lower, phrase)
-	}
-	phraseDensity := float64(phraseHits) / (float64(len(words)) / 100)
-	score := 0.35*pipeline.Clamp01(repeatedNgramRatio(words, 3)/0.08) +
-		0.25*pipeline.Clamp01(repeatedNgramRatio(words, 4)/0.05) +
-		0.25*pipeline.Clamp01(phraseDensity/4.0) +
-		0.15*repeatedOpeningRatio(sentences(text), 3)
-	return models.DetectionMethod{Name: "template_repetition", Score: pipeline.Clamp01(score), Weight: 0.20, Succeeded: true, Explanation: "Local detector checks repeated n-grams, boilerplate phrases, and repeated sentence openings."}
+	boilerplateDensity := phraseDensity(text, templatePhrases, len(words))
+	paragraphTemplate := pipeline.Clamp01(1 - coefficientOfVariation(paragraphLengths(text))/0.90)
+	score := 0.30*pipeline.Clamp01(repeatedNgramRatio(words, 3)/0.08) +
+		0.20*pipeline.Clamp01(repeatedNgramRatio(words, 4)/0.05) +
+		0.25*pipeline.Clamp01(boilerplateDensity/4.0) +
+		0.15*repeatedOpeningRatio(sentences(text), 3) +
+		0.10*paragraphTemplate
+	return models.DetectionMethod{Name: "template_repetition", Score: pipeline.Clamp01(score), Weight: 0.20, Succeeded: true, Explanation: "Local detector checks repeated n-grams, boilerplate phrases, repeated openings, and paragraph templates."}
 }
 
 func ensemble(methods []models.DetectionMethod, words int) (float64, float64) {
@@ -146,8 +155,8 @@ func ensemble(methods []models.DetectionMethod, words int) (float64, float64) {
 		return 0, 0
 	}
 	score := weighted / totalWeight
-	confidence := 0.75
-	if successes < 2 {
+	confidence := math.Min(0.45+0.13*float64(successes), 0.97)
+	if successes < 2 && confidence > 0.5 {
 		confidence = 0.5
 	}
 	if words < 40 && confidence > 0.6 {
@@ -156,29 +165,49 @@ func ensemble(methods []models.DetectionMethod, words int) (float64, float64) {
 	return pipeline.Clamp01(score), confidence
 }
 
-func threshold(words int, methods []models.DetectionMethod) float64 {
-	successes := 0
-	for _, method := range methods {
-		if method.Succeeded {
-			successes++
-		}
-	}
-	if successes >= 3 {
-		return 0.60
-	}
-	if words < 40 {
-		return 0.75
-	}
-	if words < 80 {
-		return 0.70
-	}
-	return 0.65
-}
-
 var (
 	sentenceSplitRE = regexp.MustCompile(`[.!?]+`)
 	wordTrimRE      = regexp.MustCompile(`[^\pL\pN']+`)
 )
+
+var transitionPhrases = []string{
+	"furthermore",
+	"moreover",
+	"however",
+	"therefore",
+	"in conclusion",
+	"as a result",
+	"on the other hand",
+	"it is important to note",
+	"it is worth noting",
+	"this highlights",
+	"this underscores",
+}
+
+var hedgingPhrases = []string{
+	"may",
+	"might",
+	"could",
+	"appears to",
+	"seems to",
+	"suggests that",
+	"likely",
+	"potentially",
+	"arguably",
+}
+
+var templatePhrases = []string{
+	"it is important to note",
+	"it is worth noting",
+	"in today's rapidly evolving",
+	"the broader implications",
+	"it remains to be seen",
+	"this underscores",
+	"this highlights",
+	"as the situation continues to unfold",
+	"only time will tell",
+	"stakeholders must consider",
+}
 
 func sentences(text string) []string {
 	raw := sentenceSplitRE.Split(text, -1)
@@ -214,6 +243,24 @@ func sentenceLengths(text string) []float64 {
 	return lengths
 }
 
+func paragraphLengths(text string) []float64 {
+	parts := strings.FieldsFunc(text, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	lengths := make([]float64, 0, len(parts))
+	for _, part := range parts {
+		if words := normalizedWords(part); len(words) > 0 {
+			lengths = append(lengths, float64(len(words)))
+		}
+	}
+	if len(lengths) == 0 {
+		if words := normalizedWords(text); len(words) > 0 {
+			lengths = append(lengths, float64(len(words)))
+		}
+	}
+	return lengths
+}
+
 func wordLengths(words []string) []float64 {
 	lengths := make([]float64, 0, len(words))
 	for _, word := range words {
@@ -240,6 +287,53 @@ func coefficientOfVariation(values []float64) float64 {
 		variance += diff * diff
 	}
 	return math.Sqrt(variance/float64(len(values)-1)) / mean
+}
+
+func burstiness(values []float64) float64 {
+	if len(values) < 2 {
+		return 0
+	}
+	total := 0.0
+	for _, value := range values {
+		total += value
+	}
+	mean := total / float64(len(values))
+	if mean <= 0 {
+		return 0
+	}
+	variance := 0.0
+	for _, value := range values {
+		diff := value - mean
+		variance += diff * diff
+	}
+	stddev := math.Sqrt(variance / float64(len(values)-1))
+	return (stddev - mean) / (stddev + mean)
+}
+
+func phraseDensity(text string, phrases []string, wordCount int) float64 {
+	if wordCount == 0 {
+		return 0
+	}
+	lower := strings.ToLower(text)
+	hits := 0
+	for _, phrase := range phrases {
+		hits += strings.Count(lower, phrase)
+	}
+	return float64(hits) / (float64(wordCount) / 100)
+}
+
+func punctuationFlatness(text string, wordCount int) float64 {
+	if wordCount == 0 {
+		return 0.5
+	}
+	commas := strings.Count(text, ",")
+	semicolons := strings.Count(text, ";")
+	colons := strings.Count(text, ":")
+	exclamations := strings.Count(text, "!")
+	questions := strings.Count(text, "?")
+	totalPunctuation := commas + semicolons + colons + exclamations + questions
+	perHundredWords := float64(totalPunctuation) / (float64(wordCount) / 100)
+	return pipeline.Clamp01(1 - math.Abs(perHundredWords-4.0)/8.0)
 }
 
 func uniqueCount(words []string) int {

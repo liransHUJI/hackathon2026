@@ -1,15 +1,16 @@
 FROM golang:1.22-alpine AS build
 
-WORKDIR /app
-COPY go.mod go.sum* ./
+WORKDIR /src/services/go-backend
+COPY services/go-backend/go.mod services/go-backend/go.sum* ./
 RUN go mod download
-COPY . .
+COPY services/go-backend/ ./
 RUN go build -o /out/provenance-api ./cmd/provenance-api
 
 FROM alpine:3.20
 
 WORKDIR /app
 COPY --from=build /out/provenance-api /usr/local/bin/provenance-api
-COPY migrations ./migrations
+COPY --from=build /src/services/go-backend/migrations ./migrations
+COPY public ./public
 EXPOSE 8080
 CMD ["provenance-api"]

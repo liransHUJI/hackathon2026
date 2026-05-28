@@ -5,7 +5,7 @@
 
 const USE_MOCK = false;
 const MOCK_DATA_URL = "mock-data.json";
-const API_URL = "/api/analyze";
+const REPORTS_API_URL = "/v1/reports";
 
 let reportData = null;
 let chartInstances = {};
@@ -86,19 +86,10 @@ async function runAnalysis(query) {
       if (!resp.ok) throw new Error("Failed to load data");
       data = await resp.json();
     } else {
-      // Trigger the real backend pipeline — this runs the full provenance analysis
-      const resp = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || `Pipeline failed (${resp.status})`);
-      }
-      data = await resp.json();
+      data = await runGoReportPipeline(query);
     }
 
+    data = normalizeReportForDashboard(data);
     reportData = data;
 
     // Extract prevalent topics for imagery
@@ -125,6 +116,127 @@ async function runAnalysis(query) {
     hideLoading();
     showError(err.message);
   }
+}
+
+async function runGoReportPipeline(query) {
+  const submitResp = await fetch(REPORTS_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input_type: "auto",
+      input: query,
+      priority: "interactive",
+      options: {
+        include_raw_sources: false,
+        max_sources: 80,
+        x_search_depth: "standard",
+        web_search_depth: "standard",
+      },
+    }),
+  });
+  if (!submitResp.ok) {
+    const err = await submitResp.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to submit report (${submitResp.status})`);
+  }
+
+  const submitted = await submitResp.json();
+  const jobID = submitted.job_id;
+  const reportID = submitted.report_id;
+  if (!jobID || !reportID) {
+    throw new Error("Backend did not return a job_id and report_id");
+  }
+
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const jobResp = await fetch(`/v1/jobs/${encodeURIComponent(jobID)}`);
+    if (!jobResp.ok) {
+      const err = await jobResp.json().catch(() => ({}));
+      throw new Error(err.error || `Failed to read job status (${jobResp.status})`);
+    }
+    const job = await jobResp.json();
+    updateLoadingFromJob(job);
+
+    if (job.status === "completed" || job.status === "partial") {
+      const reportResp = await fetch(`/v1/reports/${encodeURIComponent(reportID)}`);
+      if (!reportResp.ok) {
+        const err = await reportResp.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to fetch report (${reportResp.status})`);
+      }
+      return await reportResp.json();
+    }
+    if (job.status === "failed" || job.status === "cancelled") {
+      throw new Error(job.error || `Pipeline ${job.status}`);
+    }
+  }
+
+  throw new Error("Pipeline timed out while waiting for the Go report job.");
+}
+
+function updateLoadingFromJob(job) {
+  const subtext = document.getElementById("loadingSubtext");
+  if (!subtext) return;
+  const progress = job.progress || {};
+  const stage = (job.current_stage || "pipeline").replaceAll("_", " ");
+  const completed = progress.completed_stages ?? 0;
+  const total = progress.total_stages ?? "?";
+  subtext.textContent = `Running ${stage} (${completed}/${total}) • ${progress.sources_found || 0} sources found • ${progress.sources_analyzed || 0} analyzed`;
+}
+
+function normalizeReportForDashboard(data) {
+  const sourceItem = data.source_item || {};
+  if (!sourceItem.headline) {
+    sourceItem.headline = data.canonical_claim || sourceItem.original_input || "Analysis Report";
+  }
+  data.source_item = sourceItem;
+  data.risk_label = data.risk_label || "LOW";
+  data.disinformation_risk = data.disinformation_risk ?? 0;
+  data.pipeline_version = data.pipeline_version || "go";
+  data.total_duration_seconds = data.total_duration_seconds ?? 0;
+
+  data.ai_signature_results = (data.ai_signature_results || []).map(result => {
+    const ranked = result.ranked_result || {};
+    const source = ranked.scraped_result || ranked.enriched_source?.source_result || {};
+    const url = source.url || source.canonical_url || "";
+    ranked.scraped_result = {
+      result_id: source.result_id || source.source_id || "",
+      url,
+      title: source.title || "Untitled source",
+      snippet: source.snippet || source.full_text || "",
+      domain: source.domain || domainFromURL(url) || source.provider || "unknown",
+      content_type: source.content_type || source.source_type || "unknown",
+      published_at: source.published_at || source.indexed_at || null,
+      scraped_at: source.scraped_at || new Date().toISOString(),
+    };
+    ranked.similarity_score = ranked.similarity_score ?? 0;
+    ranked.chronological_rank = ranked.chronological_rank ?? 0;
+    ranked.composite_score = ranked.composite_score ?? 0;
+    ranked.is_likely_original = ranked.is_likely_original ?? ranked.is_candidate_origin ?? false;
+    result.ranked_result = ranked;
+    result.detection_methods = (result.detection_methods || []).map(method => ({
+      ...method,
+      method_name: method.method_name || method.name,
+      label: method.label || labelFromScore(method.score),
+      error: method.error || null,
+    }));
+    return result;
+  });
+  return data;
+}
+
+function domainFromURL(value) {
+  try {
+    return value ? new URL(value).hostname.replace(/^www\./, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function labelFromScore(score) {
+  if (score === null || score === undefined) return null;
+  if (score >= 0.65) return "AI";
+  if (score < 0.35) return "HUMAN";
+  return "UNCERTAIN";
 }
 
 function showError(msg) {
