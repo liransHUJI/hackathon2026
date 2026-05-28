@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -82,7 +83,7 @@ func (p *Provider) Search(ctx context.Context, query providers.SourceQuery) ([]m
 		err   error
 	)
 	if p.id == "brightdata_x" {
-		items, err = p.collectDataset(ctx, target)
+		items, err = p.collectX(ctx, target)
 	} else if isExplicitURL(query.Query) {
 		items, err = p.collectWeb(ctx, target)
 	} else {
@@ -122,11 +123,11 @@ func (p *Provider) Fetch(ctx context.Context, ref providers.SourceRef) (*models.
 
 func (p *Provider) Collect(ctx context.Context, target models.CollectionTarget) ([]models.SourceItem, error) {
 	if p.id == "brightdata_x" {
-		items, err := p.collectDataset(ctx, target)
+		items, err := p.collectX(ctx, target)
 		if err == nil && len(items) > 0 {
 			return items, nil
 		}
-		// Fallback: when the X dataset is unavailable or empty, surface tweet links via SERP.
+		// Fallback: surface tweet links via SERP snippets when the dataset scrape yields nothing.
 		if _, isURL := normalizeXStatusURL(target.Query); !isURL && strings.TrimSpace(p.serpZone) != "" {
 			if fallback, fbErr := p.collectXViaSERP(ctx, target); fbErr == nil && len(fallback) > 0 {
 				return fallback, nil
@@ -134,7 +135,69 @@ func (p *Provider) Collect(ctx context.Context, target models.CollectionTarget) 
 		}
 		return items, err
 	}
+	// brightdata_web: scrape explicit URLs directly, but resolve keyword queries to clean organic
+	// search results via SERP instead of unlocking the raw Google results page.
+	if !isExplicitURL(target.Query) && strings.TrimSpace(p.serpZone) != "" {
+		return p.collectSERP(ctx, target)
+	}
 	return p.collectWeb(ctx, target)
+}
+
+// collectX gathers X/Twitter posts for a campaign target. The configured dataset collects by
+// post URL, so keyword/hashtag queries are first resolved to tweet URLs via the SERP zone and
+// then scraped in one batch. A direct status URL is scraped as-is.
+func (p *Provider) collectX(ctx context.Context, target models.CollectionTarget) ([]models.SourceItem, error) {
+	if postURL, ok := normalizeXStatusURL(target.Query); ok {
+		return p.collectByURLs(ctx, []string{postURL}, target)
+	}
+	limit := target.MaxResults
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	urls, err := p.discoverTweetURLs(ctx, target.Query, limit)
+	if err != nil {
+		return nil, err
+	}
+	return p.collectByURLs(ctx, urls, target)
+}
+
+// discoverTweetURLs uses the SERP zone to find tweet status URLs matching a keyword/hashtag.
+func (p *Provider) discoverTweetURLs(ctx context.Context, query string, limit int) ([]string, error) {
+	if strings.TrimSpace(p.serpZone) == "" {
+		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_SERP_ZONE to discover tweets by keyword", providers.ErrUnavailable, p.id)
+	}
+	fetch := limit * 3
+	if fetch < 10 {
+		fetch = 10
+	}
+	serpTarget := models.CollectionTarget{
+		Query:      "(site:x.com OR site:twitter.com) " + query,
+		MaxResults: fetch,
+	}
+	items, err := p.collectSERP(ctx, serpTarget)
+	if err != nil {
+		return nil, err
+	}
+	urls := []string{}
+	seen := map[string]bool{}
+	for _, item := range items {
+		norm, ok := normalizeXStatusURL(derefStr(item.URL))
+		if !ok || seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		urls = append(urls, norm)
+		if limit > 0 && len(urls) >= limit {
+			break
+		}
+	}
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("%w: no tweet URLs found for %q", providers.ErrUnavailable, query)
+	}
+	return urls, nil
 }
 
 func (p *Provider) FetchAccount(ctx context.Context, accountRef string) (*models.AccountProfile, error) {
@@ -153,23 +216,25 @@ func (p *Provider) FetchInteractions(ctx context.Context, source models.SourceIt
 	if query == "" {
 		return nil, fmt.Errorf("%w: source had no usable conversation signal", providers.ErrUnavailable)
 	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
 	target := models.CollectionTarget{
 		CampaignID: source.CampaignID,
 		Query:      query,
 		Source:     "x_interactions",
 		MaxResults: limit,
 	}
-	items, err := p.collectDataset(ctx, target)
+	urls, err := p.discoverTweetURLs(ctx, query, limit)
 	if err != nil {
-		if strings.TrimSpace(p.serpZone) != "" {
-			if fallback, fbErr := p.collectXViaSERP(ctx, target); fbErr == nil {
-				items = fallback
-			} else {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
+		return nil, err
+	}
+	items, err := p.collectByURLs(ctx, urls, target)
+	if err != nil {
+		return nil, err
 	}
 	events := make([]models.InteractionEvent, 0, len(items))
 	for _, item := range items {
@@ -214,9 +279,9 @@ func conversationQuery(source models.SourceItem) string {
 	handle := strings.TrimPrefix(strings.TrimSpace(source.Author.Handle), "@")
 	if handle != "" {
 		if len(source.Hashtags) > 0 {
-			return "@" + handle + " " + source.Hashtags[0]
+			return handle + " " + source.Hashtags[0]
 		}
-		return "@" + handle
+		return handle
 	}
 	if len(source.Hashtags) > 0 {
 		return source.Hashtags[0]
@@ -235,34 +300,22 @@ func derefStr(value *string) string {
 	return *value
 }
 
-func (p *Provider) collectDataset(ctx context.Context, target models.CollectionTarget) ([]models.SourceItem, error) {
+// collectByURLs scrapes a batch of X/Twitter status URLs through the by-URL dataset and maps
+// the returned rows into source items with full author and engagement metadata.
+func (p *Provider) collectByURLs(ctx context.Context, urls []string, target models.CollectionTarget) ([]models.SourceItem, error) {
 	if p.datasetID == "" {
 		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_X_DATASET_ID", providers.ErrUnavailable, p.id)
+	}
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("%w: %s requires at least one tweet URL", providers.ErrUnavailable, p.id)
 	}
 	if err := p.ensureAvailable(0.02); err != nil {
 		return nil, err
 	}
-	triggerURL := "https://api.brightdata.com/datasets/v3/trigger?dataset_id=" + url.QueryEscape(p.datasetID)
-	var inputs []map[string]any
-	if postURL, ok := normalizeXStatusURL(target.Query); ok {
-		// Collect a specific X/Twitter status by URL.
-		triggerURL += "&format=json"
-		inputs = []map[string]any{{"url": postURL}}
-	} else {
-		// Discover posts by keyword/hashtag for campaign monitoring.
-		keyword := strings.TrimSpace(target.Query)
-		if keyword == "" {
-			return nil, fmt.Errorf("%w: %s keyword discovery requires a non-empty query", providers.ErrUnavailable, p.id)
-		}
-		num := target.MaxResults
-		if num <= 0 {
-			num = 20
-		}
-		if num > 100 {
-			num = 100
-		}
-		triggerURL += "&type=discover_new&discover_by=keyword&format=json"
-		inputs = []map[string]any{{"keyword": keyword, "num_of_posts": num}}
+	triggerURL := "https://api.brightdata.com/datasets/v3/trigger?dataset_id=" + url.QueryEscape(p.datasetID) + "&format=json"
+	inputs := make([]map[string]any, 0, len(urls))
+	for _, u := range urls {
+		inputs = append(inputs, map[string]any{"url": u})
 	}
 	body, err := json.Marshal(inputs)
 	if err != nil {
@@ -494,7 +547,7 @@ func mapSERPResponse(body []byte, target models.CollectionTarget, providerID str
 			continue
 		}
 		urlCopy := link
-		text := strings.Join(strings.Fields(result.Title+" "+result.Description), " ")
+		text := html.UnescapeString(strings.Join(strings.Fields(result.Title+" "+result.Description), " "))
 		items = append(items, models.SourceItem{
 			SourceID:       uuid.NewString(),
 			CampaignID:     target.CampaignID,
@@ -527,7 +580,7 @@ func (p *Provider) mapDatasetRows(rows []map[string]any, target models.Collectio
 	items := make([]models.SourceItem, 0, len(rows))
 	now := time.Now().UTC()
 	for _, row := range rows {
-		text := stringField(row, "text", "content", "post_text", "tweet_text", "description", "caption")
+		text := html.UnescapeString(stringField(row, "text", "content", "post_text", "tweet_text", "description", "caption"))
 		urlValue := stringField(row, "url", "post_url", "tweet_url", "link")
 		handle := strings.TrimPrefix(stringField(row, "user_posted", "author_handle", "user_handle", "username", "screen_name", "handle"), "@")
 		accountID := stringField(row, "user_id", "author_id", "account_id")
@@ -535,10 +588,10 @@ func (p *Provider) mapDatasetRows(rows []map[string]any, target models.Collectio
 			accountID = "x:" + strings.ToLower(handle)
 		}
 		published := parseAnyTime(stringField(row, "date_posted", "date", "created_at", "timestamp", "published_at"))
-		sourceID := stringField(row, "post_id", "tweet_id", "id")
-		if sourceID == "" {
-			sourceID = uuid.NewString()
-		}
+		// The dataset returns the numeric tweet id; persistence keys on a UUID, so keep the
+		// platform id in engagement metadata and use a generated UUID as the source id.
+		tweetID := stringField(row, "post_id", "tweet_id", "id")
+		sourceID := uuid.NewString()
 		var urlPtr *string
 		if urlValue != "" {
 			urlPtr = &urlValue
@@ -579,11 +632,12 @@ func (p *Provider) mapDatasetRows(rows []map[string]any, target models.Collectio
 			PublishedAt: published,
 			CollectedAt: now,
 			Engagement: map[string]any{
-				"likes":   int64Field(row, "likes", "like_count"),
-				"reposts": int64Field(row, "reposts", "retweets", "retweet_count"),
-				"replies": int64Field(row, "replies", "reply_count"),
-				"quotes":  int64Field(row, "quotes", "quote_count"),
-				"views":   int64Field(row, "views", "view_count"),
+				"tweet_id": tweetID,
+				"likes":    int64Field(row, "likes", "like_count"),
+				"reposts":  int64Field(row, "reposts", "retweets", "retweet_count"),
+				"replies":  int64Field(row, "replies", "reply_count"),
+				"quotes":   int64Field(row, "quotes", "quote_count"),
+				"views":    int64Field(row, "views", "view_count"),
 			},
 			LinkedURLs:         splitURLField(row),
 			Hashtags:           hashtags,

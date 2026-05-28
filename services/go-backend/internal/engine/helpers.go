@@ -90,6 +90,7 @@ func dedupeStrings(values []string) []string {
 type narrativeBucket struct {
 	repText   string
 	repSource models.SourceItem
+	query     string
 	hashtags  map[string]bool
 	sources   []models.SourceItem
 	sourceIDs []string
@@ -98,15 +99,24 @@ type narrativeBucket struct {
 	relevance float64
 }
 
-// matchBucket greedily assigns a source to an existing narrative when it shares a hashtag or is
-// lexically similar to the bucket's representative text; otherwise it returns nil for a new cluster.
+// matchBucket greedily assigns a source to an existing narrative. Sources are grouped first by a
+// shared hashtag, then by a strong lexical overlap, then by the campaign query that surfaced them
+// (so keyword-collected posts about the same topic form one coherent narrative).
 func matchBucket(buckets []*narrativeBucket, source models.SourceItem, text string) *narrativeBucket {
+	query := strings.ToLower(strings.TrimSpace(source.CollectionQuery))
 	for _, bucket := range buckets {
 		if sharesAnyHashtag(bucket.hashtags, source.Hashtags) {
 			return bucket
 		}
 		if scoring.LexicalSimilarity(bucket.repText, text) >= 0.32 {
 			return bucket
+		}
+	}
+	if query != "" {
+		for _, bucket := range buckets {
+			if strings.ToLower(strings.TrimSpace(bucket.query)) == query {
+				return bucket
+			}
 		}
 	}
 	return nil

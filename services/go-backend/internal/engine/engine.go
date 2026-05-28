@@ -173,14 +173,15 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 		failures = append(failures, interactionFailures...)
 		totalInteractions += len(interactions)
 		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions)
+		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
+		// The narrative row must exist before interactions/classifications reference it via FK.
+		if err := e.store.SaveNarrative(ctx, narratives[idx]); err != nil {
+			return models.DiscoveryRunResponse{}, err
+		}
 		if err := e.store.SaveInteractions(ctx, campaignID, narratives[idx].NarrativeID, interactions); err != nil {
 			return models.DiscoveryRunResponse{}, err
 		}
 		if err := e.store.SaveActorClassifications(ctx, classifications); err != nil {
-			return models.DiscoveryRunResponse{}, err
-		}
-		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
-		if err := e.store.SaveNarrative(ctx, narratives[idx]); err != nil {
 			return models.DiscoveryRunResponse{}, err
 		}
 		for _, alert := range alertsForNarrative(narratives[idx]) {
@@ -264,7 +265,7 @@ func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []m
 		}
 		match := matchBucket(buckets, source, text)
 		if match == nil {
-			match = &narrativeBucket{repText: text, repSource: source, hashtags: map[string]bool{}}
+			match = &narrativeBucket{repText: text, repSource: source, query: source.CollectionQuery, hashtags: map[string]bool{}}
 			buckets = append(buckets, match)
 		}
 		match.sources = append(match.sources, source)
