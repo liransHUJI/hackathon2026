@@ -84,7 +84,7 @@ The demo must feel like a live intelligence dashboard, not a claim-checking form
   enough evidence exists.
 - Gemini is the LLM provider for narrative extraction, entity expansion, expert agents, report
   summarization, and LLM-based AI/misinformation reasoning.
-- GPTZero and Sapling remain optional AI-text detector providers.
+- AI-text detection uses local free heuristics plus Gemini LLM-based reasoning when configured.
 - The MVP may use demo fixture data to guarantee the 2016 scenario works, but the pipeline must
   also support live provider collection when API keys are configured.
 - Authentication is not required for the hackathon demo.
@@ -999,8 +999,6 @@ Optional:
 - `MAX_X_RESULTS_PER_CYCLE`
 - `MAX_WEB_RESULTS_PER_CYCLE`
 - `BRIGHTDATA_BUDGET_USD`
-- `GPTZERO_API_KEY`
-- `SAPLING_API_KEY`
 
 Defaults:
 
@@ -1117,8 +1115,8 @@ NATS JetStream, Postgres, source adapters, and an HTTP API designed for a separa
   enough text is available.
 - Gemini is the LLM provider for semantic expansion, source reasoning, expert committee analysis,
   report summarization, and LLM-based AI detection.
-- Existing AI detection methods remain: GPTZero, Sapling, local statistical/linguistic analysis,
-  and LLM judge. A final expert committee stage is added.
+- AI detection methods are local statistical/linguistic analysis, local stylometry,
+  local template/repetition analysis, and Gemini LLM judge. A final expert committee stage is added.
 - NATS JetStream is required.
 - The deployable application is one Go binary containing the HTTP API, RSS poller, scheduler,
   workers, and orchestrator.
@@ -1165,8 +1163,6 @@ Dashboard-ready report     External providers
                              - Bright Data web search/fetch
                              - Optional web search adapters
                              - Gemini
-                             - GPTZero
-                             - Sapling
 ```
 
 The Go process starts:
@@ -1543,9 +1539,9 @@ Fields:
 - `confidence`
 - `explanation`
 
-`detection_methods` includes GPTZero, Sapling, statistical analysis, Gemini LLM judge, and any
-method that was attempted. Failed optional methods are included with an error and excluded from
-renormalized scoring.
+`detection_methods` includes local statistical analysis, local stylometry,
+local template/repetition analysis, Gemini LLM judge, and any method that was attempted.
+Failed optional methods are included with an error and excluded from renormalized scoring.
 
 ### ExpertCommitteeReview
 
@@ -1737,11 +1733,10 @@ If no source meets these thresholds, the report must say provenance is uncertain
 
 Default method weights:
 
-- GPTZero: `0.25`
-- Sapling: `0.20`
-- local statistical/linguistic: `0.20`
+- local statistical/linguistic: `0.35`
+- local stylometry: `0.25`
+- local template/repetition: `0.20`
 - Gemini LLM judge: `0.20`
-- expert committee linguistic/provenance contribution: `0.15`
 
 When optional methods fail or are not configured, renormalize over successful methods. Do not
 treat missing providers as zero. If fewer than two methods succeed, cap AI confidence at `0.50`.
@@ -1896,8 +1891,6 @@ Configurable limiters:
 - Bright Data X requests per minute.
 - Bright Data web requests per minute.
 - Gemini requests and tokens per minute.
-- GPTZero requests per minute.
-- Sapling requests per minute.
 - Basic web per-domain requests per second.
 
 The current Bright Data budget guard must remain conceptually intact. If a configured
@@ -1996,8 +1989,6 @@ Optional:
 
 - `BRIGHTDATA_API_KEY`
 - `BRIGHTDATA_BUDGET_USD`
-- `GPTZERO_API_KEY`
-- `SAPLING_API_KEY`
 - `RSS_FEEDS`
 - `RSS_POLL_INTERVAL_SECONDS`
 - `RETENTION_DAYS`
@@ -2028,7 +2019,7 @@ Examples:
 - Gemini permutation generation fails: continue with exact query, extracted entities, URL terms,
   and title phrases.
 - Bright Data X fails: continue with web search and mark provider failure.
-- GPTZero or Sapling is missing or fails: exclude from AI ensemble and explain reduced confidence.
+- Gemini LLM judge fails: continue with local AI detectors and explain reduced confidence.
 - Article extraction fails: continue with URL metadata, title, snippets, and X link searches.
 - No high-confidence source found: produce report with `risk_label=LOW` or `MEDIUM` depending on
   AI/spread evidence, and state that provenance is uncertain.

@@ -4,12 +4,11 @@ AISignatureDetectorAgent — Live Smoke Test
 ===========================================
 Verifies that the detector:
 
-  ① Always runs the statistical method (no API key needed)
+  ① Always runs the three local methods (no API key needed)
   ② Conditionally runs LLM Judge if ANTHROPIC_API_KEY is set
-  ③ Conditionally runs GPTZero / Sapling if their keys are set
-  ④ Correctly renormalises ensemble weights when some methods are absent
-  ⑤ Correctly labels the clearly-AI sample higher than the clearly-human sample
-  ⑥ Returns a valid ProvenanceReport with correct risk_label
+  ③ Correctly renormalises ensemble weights when LLM Judge is absent
+  ④ Correctly labels the clearly-AI sample higher than the clearly-human sample
+  ⑤ Returns a valid ProvenanceReport with correct risk_label
 
 Mock dataset:
   TWO_CANDIDATES:
@@ -27,8 +26,6 @@ Required:
 
 Optional keys for better coverage:
     ANTHROPIC_API_KEY — enables LLM Judge
-    GPTZERO_API_KEY   — enables GPTZero
-    SAPLING_API_KEY   — enables Sapling
 """
 
 from __future__ import annotations
@@ -191,19 +188,14 @@ async def run_smoke_test(threshold: float) -> bool:
 
     # ── Key inventory ──────────────────────────────────────────────────────
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-    gptzero_key   = os.getenv("GPTZERO_API_KEY")
-    sapling_key   = os.getenv("SAPLING_API_KEY")
-
     def key_status(key, name):
         if key: return ok(f"{name} configured  ({key[:8]}…{key[-4:]})")
         return warn(f"{name} not set  — method will be skipped")
 
     print(key_status(anthropic_key, "ANTHROPIC_API_KEY"))
-    print(key_status(gptzero_key,   "GPTZERO_API_KEY  "))
-    print(key_status(sapling_key,   "SAPLING_API_KEY  "))
-    n_keys = sum(bool(k) for k in [anthropic_key, gptzero_key, sapling_key])
-    print(info(f"Statistical method always runs (no key needed)"))
-    print(info(f"Total methods available: {1 + n_keys} / 4\n"))
+    n_keys = 1 if anthropic_key else 0
+    print(info("Local statistical, stylometric, and repetition methods always run"))
+    print(info(f"Total methods available: {3 + n_keys} / 4\n"))
 
     # ── Pre-check: statistical scorer on known samples ─────────────────────
     ai_score,  ai_feats  = _statistical_score(CLEARLY_AI_TEXT)
@@ -227,7 +219,7 @@ async def run_smoke_test(threshold: float) -> bool:
 
     # ── Run detection ──────────────────────────────────────────────────────
     analyzed = _make_analyzed_set()
-    print(f"  ⏳ Running {1 + n_keys} method(s) on {len(analyzed.top_candidates)} candidates…\n")
+    print(f"  ⏳ Running {3 + n_keys} method(s) on {len(analyzed.top_candidates)} candidates…\n")
 
     t0 = time.perf_counter()
     try:
@@ -314,13 +306,17 @@ async def run_smoke_test(threshold: float) -> bool:
         failures.append(f"risk_label {report.risk_label} inconsistent with score "
                         f"{report.disinformation_risk} (expected {expected_label})")
 
-    # Statistical method always ran (no API key needed)
+    # Local methods always ran (no API key needed)
     for r in report.ai_signature_results:
-        stat = next((m for m in r.detection_methods if m.method_name == "statistical"), None)
-        if stat is None or stat.error is not None:
-            failures.append(f"Statistical method did not run for {r.ranked_result.scraped_result.domain}")
-    if not failures or not any("tatistical" in f for f in failures):
-        print(ok("Statistical method ran for all candidates (no API key required)"))
+        for method_name in ("statistical", "stylometric", "template_repetition"):
+            method = next((m for m in r.detection_methods if m.method_name == method_name), None)
+            if method is None or method.error is not None:
+                failures.append(
+                    f"{method_name} method did not run for "
+                    f"{r.ranked_result.scraped_result.domain}"
+                )
+    if not failures or not any("method did not run" in f for f in failures):
+        print(ok("All local methods ran for all candidates (no API key required)"))
 
     # Each result has exactly 4 DetectionMethod objects
     for r in report.ai_signature_results:
@@ -359,7 +355,7 @@ async def run_smoke_test(threshold: float) -> bool:
             print(warn(
                 f"Quality: AI sample did NOT score higher than human sample "
                 f"({ai_result.ensemble_score:.2f} vs {hu_result.ensemble_score:.2f}) — "
-                f"this is acceptable if only statistical method ran"
+                f"this is acceptable when the optional LLM judge is unavailable"
             ))
 
     # ── Final verdict ──────────────────────────────────────────────────────

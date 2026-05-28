@@ -11,23 +11,23 @@ Pipeline position
 
 Detection methods & weights
 ────────────────────────────
-  gptzero      0.35  — purpose-built API model (most accurate when available)
-  sapling      0.25  — secondary commercial API
-  statistical  0.20  — local linguistic analysis, always runs (no API key needed)
-  llm_judge    0.20  — Claude Haiku as structured evaluator
+  statistical          0.35  — local linguistic analysis, always runs
+  stylometric          0.25  — local style/diversity analysis, always runs
+  template_repetition  0.20  — local repetition/boilerplate analysis, always runs
+  llm_judge            0.20  — Claude Haiku as structured evaluator, optional
 
 Graceful degradation
 ─────────────────────
-  If a method fails (API error, missing key, network timeout), it is excluded
+  If a method fails or a key is missing, it is excluded
   from the ensemble and its weight is redistributed to successful methods.
   The pipeline always produces a ProvenanceReport — it never crashes.
 
-  Minimum scenario: only statistical runs → confidence capped at 0.5.
+  Minimum scenario: the three local methods run without paid API credentials.
 
 Ensemble formula
 ─────────────────
   score      = Σ (w_i / Σ w_successful) × score_i   (successful methods only)
-  confidence = min(0.5 + 0.17 × n_successful, 1.0)
+  confidence = min(0.45 + 0.13 × n_successful, 0.97)
   is_ai      = score >= ai_detection_threshold        (default 0.65)
 """
 
@@ -36,14 +36,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import statistics
 import time
 from typing import Any, Optional
-
-import httpx
 
 from src.agents.base_agent import BaseAgent
 from src.config import PipelineConfig
@@ -59,22 +56,18 @@ from src.models.schemas import (
 logger = logging.getLogger("provenance.agent.detector")
 
 # ── Detection method names ────────────────────────────────────────────────────
-_GPTZERO    = "gptzero"
-_SAPLING    = "sapling"
 _STATISTICAL = "statistical"
+_STYLOMETRIC = "stylometric"
+_TEMPLATE_REPETITION = "template_repetition"
 _LLM_JUDGE  = "llm_judge"
 
 # ── Ensemble weights (must sum to 1.0) ───────────────────────────────────────
 _METHOD_WEIGHTS: dict[str, float] = {
-    _GPTZERO:     0.35,
-    _SAPLING:     0.25,
-    _STATISTICAL: 0.20,
+    _STATISTICAL: 0.35,
+    _STYLOMETRIC: 0.25,
+    _TEMPLATE_REPETITION: 0.20,
     _LLM_JUDGE:   0.20,
 }
-
-# ── API endpoints ─────────────────────────────────────────────────────────────
-_GPTZERO_URL = "https://api.gptzero.me/v2/predict/text"
-_SAPLING_URL = "https://api.sapling.ai/api/v1/aidetect"
 
 # ── LLM Judge model ───────────────────────────────────────────────────────────
 _JUDGE_MODEL     = "claude-haiku-4-5-20251001"  # cost-efficient for high volume
@@ -82,7 +75,7 @@ _JUDGE_MAX_TOKENS = 512
 _JUDGE_TEMPERATURE = 0.1                         # near-zero for consistency
 
 # ── Text limits ───────────────────────────────────────────────────────────────
-_MAX_TEXT_CHARS  = 5_000   # truncate before sending to any API
+_MAX_TEXT_CHARS  = 5_000   # keep detector prompts and local analysis bounded
 _MIN_TEXT_CHARS  = 50      # skip detection for very short snippets
 
 # ── Transition/hedging phrases flagged by statistical analysis ────────────────
@@ -99,6 +92,13 @@ _HEDGING_PHRASES = [
     "we must acknowledge", "it bears mentioning", "it cannot be overstated",
     "it is widely recognized", "needless to say", "it goes without saying",
 ]
+_TEMPLATE_PHRASES = [
+    "it is important to note", "it is worth noting", "this article explores",
+    "in today's rapidly evolving", "this underscores the importance",
+    "a complex and multifaceted", "only time will tell", "it remains to be seen",
+    "the broader implications", "stakeholders must consider",
+]
+_WORD_RE = re.compile(r"\b[\w']+\b")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -116,21 +116,15 @@ class AISignatureDetectorAgent(BaseAgent):
         report = await agent.process(analyzed_set)
 
     Args:
-        gptzero_api_key:    Overrides GPTZERO_API_KEY env var.
-        sapling_api_key:    Overrides SAPLING_API_KEY env var.
         anthropic_api_key:  Overrides ANTHROPIC_API_KEY env var.
         detection_threshold: Overrides PipelineConfig.ai_detection_threshold.
-        http_timeout:       Per-request timeout in seconds for external APIs.
     """
 
     def __init__(
         self,
         name: str = "detector",
-        gptzero_api_key: Optional[str] = None,
-        sapling_api_key: Optional[str] = None,
         anthropic_api_key: Optional[str] = None,
         detection_threshold: Optional[float] = None,
-        http_timeout: float = 20.0,
         input_queue: Optional[asyncio.Queue[Any]] = None,
         output_queue: Optional[asyncio.Queue[Any]] = None,
         config: Optional[PipelineConfig] = None,
@@ -143,12 +137,6 @@ class AISignatureDetectorAgent(BaseAgent):
         )
 
         # ── API keys ──────────────────────────────────────────────────────────
-        self._gptzero_key: Optional[str] = (
-            gptzero_api_key or os.getenv("GPTZERO_API_KEY") or self.config.gptzero_api_key
-        )
-        self._sapling_key: Optional[str] = (
-            sapling_api_key or os.getenv("SAPLING_API_KEY") or self.config.sapling_api_key
-        )
         _anthropic_key: Optional[str] = (
             anthropic_api_key
             or os.getenv("ANTHROPIC_API_KEY")
@@ -162,9 +150,6 @@ class AISignatureDetectorAgent(BaseAgent):
             if detection_threshold is not None
             else self.config.ai_detection_threshold
         )
-
-        # ── httpx client (shared across all API calls) ────────────────────────
-        self._http_client = httpx.AsyncClient(timeout=http_timeout)
 
         # ── Anthropic client (optional) ───────────────────────────────────────
         self._anthropic_client: Any = None
@@ -183,9 +168,7 @@ class AISignatureDetectorAgent(BaseAgent):
 
         logger.info(
             "AISignatureDetectorAgent ready — "
-            "gptzero=%s  sapling=%s  llm_judge=%s  threshold=%.2f",
-            bool(self._gptzero_key),
-            bool(self._sapling_key),
+            "local_methods=3  llm_judge=%s  threshold=%.2f",
             bool(self._anthropic_client),
             self.detection_threshold,
         )
@@ -193,8 +176,8 @@ class AISignatureDetectorAgent(BaseAgent):
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        """Close the shared httpx client. Call when the agent is no longer needed."""
-        await self._http_client.aclose()
+        """Lifecycle hook kept for PipelineRunner compatibility."""
+        return None
 
     # ── BaseAgent.process (queue path) ────────────────────────────────────────
 
@@ -259,14 +242,19 @@ class AISignatureDetectorAgent(BaseAgent):
                 text[:40], len(text),
             )
 
-        # All four methods run concurrently
-        gptzero_task   = self._run_gptzero(text)
-        sapling_task   = self._run_sapling(text)
-        stat_task      = asyncio.to_thread(_run_statistical, text)
-        llm_judge_task = self._run_llm_judge(text)
+        # All four methods run concurrently; three are free/local.
+        stat_task       = asyncio.to_thread(_run_statistical, text)
+        stylometric_task = asyncio.to_thread(_run_stylometric, text)
+        repetition_task = asyncio.to_thread(_run_template_repetition, text)
+        llm_judge_task  = self._run_llm_judge(text)
 
         methods: list[DetectionMethod] = list(
-            await asyncio.gather(gptzero_task, sapling_task, stat_task, llm_judge_task)
+            await asyncio.gather(
+                stat_task,
+                stylometric_task,
+                repetition_task,
+                llm_judge_task,
+            )
         )
 
         ensemble_score, is_ai, confidence, explanation = _compute_ensemble(
@@ -281,77 +269,6 @@ class AISignatureDetectorAgent(BaseAgent):
             confidence       = round(confidence, 4),
             explanation      = explanation,
         )
-
-    # ── Method 1: GPTZero ─────────────────────────────────────────────────────
-
-    async def _run_gptzero(self, text: str) -> DetectionMethod:
-        """
-        Call the GPTZero v2 API.
-        Returns DetectionMethod with error set if no key or API fails.
-        """
-        if not self._gptzero_key:
-            return DetectionMethod(
-                method_name=_GPTZERO,
-                error="GPTZERO_API_KEY not configured",
-            )
-        truncated = text[:_MAX_TEXT_CHARS]
-        try:
-            resp = await self._http_client.post(
-                _GPTZERO_URL,
-                headers={
-                    "X-Api-Key": self._gptzero_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={"document": truncated},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            score = float(data.get("documents", [{}])[0].get("completely_generated_prob", 0.5))
-            score = max(0.0, min(1.0, score))
-            label = "AI" if score >= 0.65 else "HUMAN" if score < 0.35 else "UNCERTAIN"
-            return DetectionMethod(
-                method_name=_GPTZERO,
-                score=score,
-                label=label,
-                raw_response=data,
-            )
-        except Exception as exc:
-            logger.warning("GPTZero API call failed: %s", exc)
-            return DetectionMethod(method_name=_GPTZERO, error=str(exc))
-
-    # ── Method 2: Sapling ─────────────────────────────────────────────────────
-
-    async def _run_sapling(self, text: str) -> DetectionMethod:
-        """
-        Call the Sapling AI Detector API.
-        Returns DetectionMethod with error set if no key or API fails.
-        """
-        if not self._sapling_key:
-            return DetectionMethod(
-                method_name=_SAPLING,
-                error="SAPLING_API_KEY not configured",
-            )
-        truncated = text[:_MAX_TEXT_CHARS]
-        try:
-            resp = await self._http_client.post(
-                _SAPLING_URL,
-                json={"key": self._sapling_key, "text": truncated},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            score = float(data.get("score", 0.5))  # 1.0 = AI-generated
-            score = max(0.0, min(1.0, score))
-            label = "AI" if score >= 0.65 else "HUMAN" if score < 0.35 else "UNCERTAIN"
-            return DetectionMethod(
-                method_name=_SAPLING,
-                score=score,
-                label=label,
-                raw_response=data,
-            )
-        except Exception as exc:
-            logger.warning("Sapling API call failed: %s", exc)
-            return DetectionMethod(method_name=_SAPLING, error=str(exc))
 
     # ── Method 4: LLM Judge ───────────────────────────────────────────────────
 
@@ -477,6 +394,46 @@ def _run_statistical(text: str) -> DetectionMethod:
     )
 
 
+def _run_stylometric(text: str) -> DetectionMethod:
+    """Local stylometry analysis focused on diversity and structural regularity."""
+    if not text or len(text.strip()) < _MIN_TEXT_CHARS:
+        return DetectionMethod(
+            method_name=_STYLOMETRIC,
+            score=0.5,
+            label="UNCERTAIN",
+            raw_response={"note": "text too short for reliable analysis"},
+        )
+
+    score, features = _stylometric_score(text)
+    label = "AI" if score >= 0.65 else "HUMAN" if score < 0.35 else "UNCERTAIN"
+    return DetectionMethod(
+        method_name=_STYLOMETRIC,
+        score=round(score, 3),
+        label=label,
+        raw_response={"features": features, "aggregate_score": round(score, 3)},
+    )
+
+
+def _run_template_repetition(text: str) -> DetectionMethod:
+    """Local repetition analysis for boilerplate phrases and repeated n-gram patterns."""
+    if not text or len(text.strip()) < _MIN_TEXT_CHARS:
+        return DetectionMethod(
+            method_name=_TEMPLATE_REPETITION,
+            score=0.5,
+            label="UNCERTAIN",
+            raw_response={"note": "text too short for reliable analysis"},
+        )
+
+    score, features = _template_repetition_score(text)
+    label = "AI" if score >= 0.65 else "HUMAN" if score < 0.35 else "UNCERTAIN"
+    return DetectionMethod(
+        method_name=_TEMPLATE_REPETITION,
+        score=round(score, 3),
+        label=label,
+        raw_response={"features": features, "aggregate_score": round(score, 3)},
+    )
+
+
 def _statistical_score(text: str) -> tuple[float, dict[str, float]]:
     """Return (ai_score 0-1, features_dict). Exposed for unit testing."""
     words  = text.lower().split()
@@ -551,6 +508,91 @@ def _statistical_score(text: str) -> tuple[float, dict[str, float]]:
     return round(ai_score, 3), features
 
 
+def _stylometric_score(text: str) -> tuple[float, dict[str, float]]:
+    """Return a free local stylometry score where 1.0 means more AI-like."""
+    words = _words(text)
+    n_words = max(len(words), 1)
+    sentences = _sentences(text)
+    sentence_lengths = [len(_words(sentence)) for sentence in sentences if _words(sentence)]
+
+    lexical_diversity = len(set(words)) / n_words
+    lexical_uniformity = _clamp01((0.72 - lexical_diversity) / 0.42)
+
+    word_lengths = [len(word) for word in words]
+    word_cv = _coefficient_of_variation(word_lengths)
+    word_length_uniformity = _clamp01(1.0 - word_cv / 0.55)
+
+    sentence_cv = _coefficient_of_variation(sentence_lengths)
+    sentence_regularization = _clamp01(1.0 - sentence_cv / 0.65)
+
+    openings = [_sentence_opening(sentence) for sentence in sentences if _sentence_opening(sentence)]
+    opening_diversity = len(set(openings)) / max(len(openings), 1)
+    opening_uniformity = _clamp01((0.75 - opening_diversity) / 0.55)
+
+    punctuation_counts = [
+        sum(1 for char in sentence if char in ",;:()[]")
+        for sentence in sentences
+    ]
+    punctuation_flatness = _clamp01(1.0 - _coefficient_of_variation(punctuation_counts) / 1.2)
+
+    features = {
+        "lexical_uniformity": round(lexical_uniformity, 3),
+        "word_length_uniformity": round(word_length_uniformity, 3),
+        "sentence_regularization": round(sentence_regularization, 3),
+        "opening_uniformity": round(opening_uniformity, 3),
+        "punctuation_flatness": round(punctuation_flatness, 3),
+    }
+    weights = {
+        "lexical_uniformity": 0.30,
+        "word_length_uniformity": 0.15,
+        "sentence_regularization": 0.30,
+        "opening_uniformity": 0.15,
+        "punctuation_flatness": 0.10,
+    }
+    ai_score = sum(features[key] * weights[key] for key in features)
+    return round(ai_score, 3), features
+
+
+def _template_repetition_score(text: str) -> tuple[float, dict[str, float]]:
+    """Return a free local score for repeated templates and boilerplate phrasing."""
+    words = _words(text)
+    sentences = _sentences(text)
+    n_words = max(len(words), 1)
+    lowered = text.lower()
+
+    repeated_trigrams = _repeated_ngram_ratio(words, 3)
+    repeated_fourgrams = _repeated_ngram_ratio(words, 4)
+
+    phrase_hits = sum(lowered.count(phrase) for phrase in _TEMPLATE_PHRASES)
+    phrase_density = phrase_hits / (n_words / 100.0)
+    boilerplate_density = _clamp01(phrase_density / 4.0)
+
+    openings = [_sentence_opening(sentence, size=3) for sentence in sentences]
+    openings = [opening for opening in openings if opening]
+    repeated_openings = 1.0 - (len(set(openings)) / max(len(openings), 1))
+
+    paragraph_lens = [len(_words(paragraph)) for paragraph in _paragraphs(text)]
+    paragraph_cv = _coefficient_of_variation(paragraph_lens)
+    paragraph_template = _clamp01(1.0 - paragraph_cv / 0.7)
+
+    features = {
+        "repeated_trigrams": round(_clamp01(repeated_trigrams / 0.08), 3),
+        "repeated_fourgrams": round(_clamp01(repeated_fourgrams / 0.05), 3),
+        "boilerplate_density": round(boilerplate_density, 3),
+        "repeated_sentence_openings": round(_clamp01(repeated_openings / 0.5), 3),
+        "paragraph_template": round(paragraph_template, 3),
+    }
+    weights = {
+        "repeated_trigrams": 0.25,
+        "repeated_fourgrams": 0.20,
+        "boilerplate_density": 0.25,
+        "repeated_sentence_openings": 0.15,
+        "paragraph_template": 0.15,
+    }
+    ai_score = sum(features[key] * weights[key] for key in features)
+    return round(ai_score, 3), features
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Ensemble computation  (pure function — no side effects)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -581,8 +623,8 @@ def _compute_ensemble(
     )
     score = max(0.0, min(1.0, score))
 
-    # Confidence: 0.5 with one method, approaching 1.0 with four
-    confidence = min(0.5 + 0.17 * len(successful), 1.0)
+    # Confidence scales with independent signals without over-claiming local heuristics.
+    confidence = min(0.45 + 0.13 * len(successful), 0.97)
 
     is_ai = score >= threshold
 
@@ -606,6 +648,47 @@ def _compute_ensemble(
 # ══════════════════════════════════════════════════════════════════════════════
 #  Helpers
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _words(text: str) -> list[str]:
+    return [match.group(0).lower() for match in _WORD_RE.finditer(text)]
+
+
+def _sentences(text: str) -> list[str]:
+    return [sentence.strip() for sentence in re.split(r"[.!?]+", text) if sentence.strip()]
+
+
+def _paragraphs(text: str) -> list[str]:
+    return [paragraph.strip() for paragraph in re.split(r"\n{2,}", text) if paragraph.strip()]
+
+
+def _coefficient_of_variation(values: list[int]) -> float:
+    if len(values) < 2:
+        return 0.5
+    mean = statistics.mean(values)
+    if mean <= 0.0:
+        return 0.5
+    return statistics.stdev(values) / mean
+
+
+def _sentence_opening(sentence: str, size: int = 2) -> str:
+    words = _words(sentence)
+    return " ".join(words[:size])
+
+
+def _repeated_ngram_ratio(words: list[str], size: int) -> float:
+    if len(words) < size * 2:
+        return 0.0
+    counts: dict[tuple[str, ...], int] = {}
+    for index in range(0, len(words) - size + 1):
+        ngram = tuple(words[index:index + size])
+        counts[ngram] = counts.get(ngram, 0) + 1
+    repeated = sum(count - 1 for count in counts.values() if count > 1)
+    return repeated / max(len(words) - size + 1, 1)
+
 
 def _extract_text(ranked: RankedResult) -> str:
     """

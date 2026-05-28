@@ -329,7 +329,8 @@ class DetectionMethod(BaseModel):
     """
     Result from a single AI-text-detection method.
 
-    method_name options: "gptzero" | "sapling" | "statistical" | "llm_judge"
+    method_name options:
+    "statistical" | "stylometric" | "template_repetition" | "llm_judge"
     """
 
     method_name: str
@@ -363,7 +364,7 @@ class AISignatureResult(BaseModel):
     ranked_result: RankedResult
     detection_methods: list[DetectionMethod] = Field(
         default_factory=list,
-        description="Results from all four detection methods (successful and failed).",
+        description="Results from all configured detection methods (successful and failed).",
     )
     ensemble_score: float = Field(
         default=0.0,
@@ -371,7 +372,7 @@ class AISignatureResult(BaseModel):
         le=1.0,
         description=(
             "Weighted average across successful methods. "
-            "Weights: GPTZero 35%, Sapling 25%, Statistical 20%, LLM Judge 20%."
+            "Weights: Statistical 35%, Stylometric 25%, Template 20%, LLM Judge 20%."
         ),
     )
     is_ai_generated: bool = Field(
@@ -384,7 +385,7 @@ class AISignatureResult(BaseModel):
         le=1.0,
         description=(
             "Scales with number of successful methods: "
-            "min(0.5 + 0.17 × n_successful, 1.0). Capped at 0.5 if < 2 methods ran."
+            "min(0.45 + 0.13 × n_successful, 0.97)."
         ),
     )
     explanation: str = Field(

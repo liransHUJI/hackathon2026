@@ -9,8 +9,8 @@ Prerequisites
 ─────────────
   1. Create .env  (copy from .env.example)
   2. Set GEMINI_API_KEY=<your-key>   (free: https://aistudio.google.com)
-  3. (Optional) Set ANTHROPIC_API_KEY, GPTZERO_API_KEY, SAPLING_API_KEY
-     — these improve AI-detection accuracy but are not required
+  3. (Optional) Set ANTHROPIC_API_KEY for the LLM judge
+     — local AI-detection methods run without paid detector APIs
 
 Usage
 ─────
@@ -132,8 +132,6 @@ def _check_prerequisites() -> bool:
     """Print key status and return False if any required key is missing."""
     gemini_key   = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     anthropic_key= os.getenv("ANTHROPIC_API_KEY")
-    gptzero_key  = os.getenv("GPTZERO_API_KEY")
-    sapling_key  = os.getenv("SAPLING_API_KEY")
 
     def _key_line(name: str, key: str | None, required: bool = False) -> str:
         if key:
@@ -146,8 +144,7 @@ def _check_prerequisites() -> bool:
     print(f"  {'─' * 54}")
     print(_key_line("GEMINI_API_KEY",    gemini_key,    required=True))
     print(_key_line("ANTHROPIC_API_KEY", anthropic_key, required=False))
-    print(_key_line("GPTZERO_API_KEY",   gptzero_key,   required=False))
-    print(_key_line("SAPLING_API_KEY",   sapling_key,   required=False))
+    print(f"  {_G}✓{_D}  {'LOCAL_AI_DETECTORS':<20}  {_DIM}no paid API key needed{_D}")
     print()
 
     if not gemini_key:

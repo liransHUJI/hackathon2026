@@ -155,8 +155,6 @@ class PipelineRunner:
 
         Optional keys (graceful degradation if absent):
             ANTHROPIC_API_KEY         (stage 5 LLM Judge)
-            GPTZERO_API_KEY           (stage 5 GPTZero)
-            SAPLING_API_KEY           (stage 5 Sapling)
             SCRAPER_BACKEND=brightdata + BRIGHTDATA_API_KEY  (premium scraping)
 
         Raises:

@@ -419,6 +419,7 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 	}
 	narrative.RecommendedPRAction = recommendedAction(*narrative)
 	narrative.WhyItMatters = whyItMatters(*narrative)
+	narrative.CapitalLossEstimate = scoring.CapitalLossEstimate(*narrative)
 	narrative.DecisionExplanation = decisionExplanation(*narrative)
 	narrative.UpdatedAt = time.Now().UTC()
 }
@@ -454,6 +455,7 @@ func (e *Engine) snapshot(campaignID string, narratives []models.NarrativeCluste
 			SourcePopularity:       narrative.TopSources,
 			RecommendedPRAction:    narrative.RecommendedPRAction,
 			WhyItMatters:           narrative.WhyItMatters,
+			CapitalLossEstimate:    narrative.CapitalLossEstimate,
 			DashboardPriority:      scoring.DashboardPriority(narrative.PopularityScore, narrative.InauthenticPercentage, sourcePopularityScore, velocityScore(narrative.VelocityPerHour), narrative.RelevanceScore),
 			Status:                 narrativeStatus(narrative),
 			InsufficientDataReason: narrative.InsufficientDataReason,

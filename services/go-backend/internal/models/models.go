@@ -616,9 +616,21 @@ type NarrativeCluster struct {
 	TopSources               []SourcePopularity        `json:"top_sources"`
 	RecommendedPRAction      string                    `json:"recommended_pr_action"`
 	WhyItMatters             string                    `json:"why_it_matters"`
+	CapitalLossEstimate      CapitalLossEstimate       `json:"capital_loss_estimate"`
 	DecisionExplanation      string                    `json:"decision_explanation"`
 	CreatedAt                time.Time                 `json:"created_at"`
 	UpdatedAt                time.Time                 `json:"updated_at"`
+}
+
+type CapitalLossEstimate struct {
+	Applies     bool    `json:"applies"`
+	MinUSD      int64   `json:"min_usd"`
+	MaxUSD      int64   `json:"max_usd"`
+	ExpectedUSD int64   `json:"expected_usd"`
+	Confidence  float64 `json:"confidence"`
+	Source      string  `json:"source"`
+	Explanation string  `json:"explanation"`
+	Disclaimer  string  `json:"disclaimer"`
 }
 
 type SourcePopularity struct {
@@ -655,6 +667,7 @@ type NarrativeCard struct {
 	ImportantInteractors   []AccountProfile          `json:"important_interactors"`
 	RecommendedPRAction    string                    `json:"recommended_pr_action"`
 	WhyItMatters           string                    `json:"why_it_matters"`
+	CapitalLossEstimate    CapitalLossEstimate       `json:"capital_loss_estimate"`
 	DashboardPriority      float64                   `json:"dashboard_priority"`
 	Status                 EngineStatus              `json:"status"`
 	InsufficientDataReason *string                   `json:"insufficient_data_reason,omitempty"`

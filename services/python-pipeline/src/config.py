@@ -105,8 +105,6 @@ class PipelineConfig(BaseSettings):
     )
 
     # ── AI detection ──────────────────────────────────────────────────────────
-    gptzero_api_key: str | None = Field(default=None)
-    sapling_api_key: str | None = Field(default=None)
     ai_detection_threshold: float = Field(
         default=0.65,
         ge=0.0,

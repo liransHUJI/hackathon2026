@@ -63,8 +63,8 @@ The system answers two questions about any news item:
                  ▼
   ┌──────────────────────────────┐
   │ 5. AISignatureDetectorAgent  │  Consumes: AnalyzedSet
-  │  GPTZero + Sapling +         │  Produces: ProvenanceReport
-  │  Statistical + LLM-Judge     │
+  │  Local heuristics +          │  Produces: ProvenanceReport
+  │  optional LLM-Judge          │
   └──────────────┬───────────────┘
                  │
             report_q (unbounded)
@@ -180,7 +180,7 @@ class AnalyzedSet(BaseModel):
 
 ```python
 class DetectionMethod(BaseModel):
-    method_name:  str                  # "gptzero" | "sapling" | "statistical" | "llm_judge"
+    method_name:  str                  # "statistical" | "stylometric" | "template_repetition" | "llm_judge"
     score:        Optional[float]      # 0.0–1.0; None if method did not run
     label:        Optional[str]        # "AI" | "HUMAN" | "UNCERTAIN"
     raw_response: dict                 # Full API/analysis response for auditability
@@ -647,32 +647,10 @@ self.logger = structlog.get_logger(agent_name=self.name)
 
 ## AI Detection Methods
 
-All four methods run **in parallel** for each of the top-10 candidates.
+All methods run **in parallel** for each of the top-10 candidates. The default detector stack has
+no paid detector API dependency.
 
-### Method 1 — GPTZero API
-```
-Endpoint : POST https://api.gptzero.me/v2/predict/text
-Auth     : X-Api-Key header (env: GPTZERO_API_KEY)
-Free tier: 10 000 words/month
-Input    : {"document": full_text}
-Score    : response["completely_generated_prob"]  (float 0.0–1.0)
-Weight   : 0.35
-Timeout  : 10 s; retries: 2
-Fallback : error set in DetectionMethod; excluded from ensemble
-```
-
-### Method 2 — Sapling AI Detector
-```
-Endpoint : POST https://api.sapling.ai/api/v1/aidetect
-Auth     : "key" field in body (env: SAPLING_API_KEY)
-Input    : {"key": ..., "text": full_text}
-Score    : response["score"]  (1.0 = AI, 0.0 = human)
-Weight   : 0.25
-Timeout  : 10 s; retries: 2
-Fallback : same as GPTZero
-```
-
-### Method 3 — Statistical / Linguistic Analysis (local, no external calls)
+### Method 1 — Statistical / Linguistic Analysis (local, no external calls)
 `src/provenance/utils/linguistic_analysis.py`
 
 Five features combined into a composite score:
@@ -685,7 +663,21 @@ Five features combined into a composite score:
 | Transition word density | > 3 per 100 words ("Furthermore", "Moreover", …) |
 | Paragraph length uniformity | Low standard deviation |
 
-Libraries: `spacy` (tokenisation); `numpy` for statistics.
+Libraries: Python standard library statistics.
+Weight: 0.35 — never fails; always contributes to ensemble.
+
+### Method 2 — Stylometric Analysis (local, no external calls)
+
+Checks lexical diversity, word-length variance, sentence regularity, punctuation flatness, and
+repeated sentence openings.
+
+Weight: 0.25 — never fails; always contributes to ensemble.
+
+### Method 3 — Template / Repetition Analysis (local, no external calls)
+
+Checks repeated n-grams, boilerplate phrase density, repeated sentence openings, and paragraph
+template regularity.
+
 Weight: 0.20 — never fails; always contributes to ensemble.
 
 ### Method 4 — LLM Self-Evaluation (Claude as Judge)
@@ -715,7 +707,12 @@ Score used: `response["overall"]`. Weight: 0.20.
 
 ```python
 # Weights
-WEIGHTS = {"gptzero": 0.35, "sapling": 0.25, "statistical": 0.20, "llm_judge": 0.20}
+WEIGHTS = {
+    "statistical": 0.35,
+    "stylometric": 0.25,
+    "template_repetition": 0.20,
+    "llm_judge": 0.20,
+}
 
 # Only successful methods (error is None) contribute
 successful = [m for m in methods if m.error is None and m.score is not None]
@@ -723,8 +720,7 @@ total_w    = sum(WEIGHTS[m.method_name] for m in successful)
 score      = sum((WEIGHTS[m.method_name] / total_w) * m.score for m in successful)
 
 # Confidence scales with number of successful methods
-confidence = min(0.5 + 0.17 * len(successful), 1.0)
-# 1 method → 0.67;  2 → 0.84;  3 → 1.0;  0 → 0.5 (minimum)
+confidence = min(0.45 + 0.13 * len(successful), 0.97)
 
 is_ai_generated = score >= config.ai_detection_threshold  # default 0.65
 ```
@@ -757,8 +753,6 @@ is_ai_generated = score >= config.ai_detection_threshold  # default 0.65
 | `TELEGRAM_API_ID` | str | None | From my.telegram.org |
 | `TELEGRAM_API_HASH` | str | None | From my.telegram.org |
 | `EMBEDDING_MODEL` | str | `all-MiniLM-L6-v2` | sentence-transformers model |
-| `GPTZERO_API_KEY` | str | None | Optional |
-| `SAPLING_API_KEY` | str | None | Optional |
 | `AI_DETECTION_THRESHOLD` | float | `0.65` | Ensemble threshold for is_ai_generated |
 
 ---

@@ -33,8 +33,8 @@ whether it was written by a machine.
 │  │ 4. Chronological &   │    │       5. AI Signature Detector           │   │
 │  │  Similarity Analyzer │───▶│              Agent                       │   │
 │  │                      │    │                                          │   │
-│  │ Sort ▸ Embed ▸ Rank  │    │  GPTZero + Sapling + Statistical +       │   │
-│  │ Filter ▸ Top 10      │    │  LLM-Judge → ensemble score              │   │
+│  │ Sort ▸ Embed ▸ Rank  │    │  Local heuristics + optional LLM-Judge   │   │
+│  │ Filter ▸ Top 10      │    │  → ensemble score                        │   │
 │  └──────────────────────┘    └────────────────────┬─────────────────────┘   │
 │                                                   │                         │
 │                                          ProvenanceReport                   │
@@ -59,13 +59,11 @@ whether it was written by a machine.
 |-------------|-------|
 | **Python 3.11+** | Required. Tested on 3.11 and 3.12. |
 | `ANTHROPIC_API_KEY` | **Required.** Powers the Semantic Agent and LLM-Judge detector. |
-| `GPTZERO_API_KEY` | Optional. Free tier: 10k words/month at [gptzero.me](https://gptzero.me). |
-| `SAPLING_API_KEY` | Optional. Free tier available at [sapling.ai](https://sapling.ai). |
 | `BRIGHTDATA_API_KEY` | Optional. **Hackathon-day only.** $75 in credits. |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Optional. Required only for Telegram ingestion. |
 
-The pipeline runs with just `ANTHROPIC_API_KEY`. All other keys unlock additional capabilities;
-the `BasicWebScraper` (DuckDuckGo + httpx) requires no paid credentials.
+The pipeline runs with just `ANTHROPIC_API_KEY`. AI detection uses free local heuristics plus
+the optional LLM judge; the `BasicWebScraper` (DuckDuckGo + httpx) requires no paid credentials.
 
 ---
 
@@ -106,9 +104,8 @@ SCRAPER_BACKEND=basic
 # BRIGHTDATA_API_KEY=...
 # BRIGHTDATA_BUDGET_USD=75.0          # hard spend cap — never exceed this
 
-# ── AI Detection APIs (optional — pipeline degrades gracefully without them) ───
-# GPTZERO_API_KEY=...
-# SAPLING_API_KEY=...
+# ── AI Detection ──────────────────────────────────────────────────────────────
+# Local statistical, stylometric, and repetition detectors run without paid APIs.
 
 # ── Telegram ingestion (optional) ─────────────────────────────────────────────
 # TELEGRAM_API_ID=...

@@ -234,7 +234,7 @@ response = await self._client.get(url)
 Use `@retry_with_backoff(max_attempts=3, base_delay=1.0)` from `utils/retry.py` on:
 - All Anthropic SDK calls
 - All `httpx` calls in scrapers
-- All external AI-detection API calls (GPTZero, Sapling)
+- Any external AI-detection API calls if a future free provider is added
 
 ---
 
@@ -245,9 +245,9 @@ Weights are renormalised over successful methods (errors are excluded, not zeroe
 
 | Method | Weight | External? | Fallback |
 |--------|--------|-----------|----------|
-| GPTZero API | 35% | Yes (`GPTZERO_API_KEY`) | Excluded from ensemble |
-| Sapling AI Detector | 25% | Yes (`SAPLING_API_KEY`) | Excluded from ensemble |
-| Statistical / Linguistic | 20% | No (spacy, local) | Never fails |
+| Statistical / Linguistic | 35% | No (local) | Never fails |
+| Stylometric | 25% | No (local) | Never fails |
+| Template / Repetition | 20% | No (local) | Never fails |
 | LLM Self-Evaluation | 20% | Yes (Anthropic) | Excluded from ensemble |
 
 **Ensemble threshold:** `is_ai_generated = ensemble_score >= AI_DETECTION_THRESHOLD` (default 0.65).
@@ -326,7 +326,7 @@ Activation steps (zero code changes):
 | `model = SentenceTransformer(...)` inside `process()` | Load in `__init__`, reuse per call |
 | `print(f"error: {e}")` | `self.logger.error("msg", exc_info=True)` |
 | Hardcode `threshold = 0.45` in agent code | `config.similarity_threshold` |
-| Write a test that calls `api.gptzero.me` | Mock the HTTP response |
+| Add paid detector APIs by default | Prefer local/free detectors and keep external calls optional |
 | Add logic to `runner.py` beyond queue wiring | Put it in the relevant agent |
 | Increase `semantic_q maxsize` without profiling | Profile first; document the reason |
 | Disable `BudgetExceededError` guard | Never — this is a hard financial limit |

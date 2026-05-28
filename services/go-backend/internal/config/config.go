@@ -23,8 +23,6 @@ type Config struct {
 	BrightDataBudgetUSD            float64
 	BrightDataXRequestsPerMinute   int
 	BrightDataWebRequestsPerMinute int
-	GPTZeroAPIKey                  string
-	SaplingAPIKey                  string
 	RSSFeeds                       []string
 	RSSPollInterval                time.Duration
 	RSSMaxItemsPerPoll             int
@@ -58,8 +56,6 @@ func Load() Config {
 		BrightDataBudgetUSD:            envFloat("BRIGHTDATA_BUDGET_USD", 0),
 		BrightDataXRequestsPerMinute:   envInt("BRIGHTDATA_X_REQUESTS_PER_MINUTE", 30),
 		BrightDataWebRequestsPerMinute: envInt("BRIGHTDATA_WEB_REQUESTS_PER_MINUTE", 30),
-		GPTZeroAPIKey:                  os.Getenv("GPTZERO_API_KEY"),
-		SaplingAPIKey:                  os.Getenv("SAPLING_API_KEY"),
 		RSSFeeds:                       envCSV("RSS_FEEDS"),
 		RSSPollInterval:                time.Duration(envInt("RSS_POLL_INTERVAL_SECONDS", 300)) * time.Second,
 		RSSMaxItemsPerPoll:             envInt("RSS_MAX_ITEMS_PER_POLL", 20),

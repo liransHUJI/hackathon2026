@@ -217,6 +217,50 @@ func SourcePopularity(sources []models.SourceItem, interactions []models.Interac
 	return out
 }
 
+func CapitalLossEstimate(narrative models.NarrativeCluster) models.CapitalLossEstimate {
+	negativeShare := narrative.SentimentDistribution["negative"]
+	applies := negativeShare >= 0.35 || narrative.OverallRisk >= 0.35 || narrative.InauthenticPercentage >= 25
+	if !applies {
+		return models.CapitalLossEstimate{
+			Applies:     false,
+			Confidence:  0.2,
+			Source:      "llm_or_heuristic_estimation",
+			Explanation: "Trend is not currently negative or risky enough to estimate meaningful capital loss.",
+			Disclaimer:  "This is not a financial model and should not be treated as accurate.",
+		}
+	}
+	base := float64(narrative.ReachEstimate) * (0.02 + 0.08*narrative.PopularityScore)
+	riskMultiplier := 1 + narrative.OverallRisk + (narrative.InauthenticPercentage / 100)
+	negativeMultiplier := 1 + negativeShare
+	expected := int64(math.Round(base * riskMultiplier * negativeMultiplier))
+	if expected < 1000 {
+		expected = 1000
+	}
+	minimum := int64(float64(expected) * 0.35)
+	maximum := int64(float64(expected) * 2.75)
+	return models.CapitalLossEstimate{
+		Applies:     true,
+		MinUSD:      roundToNearest(minimum, 1000),
+		MaxUSD:      roundToNearest(maximum, 1000),
+		ExpectedUSD: roundToNearest(expected, 1000),
+		Confidence:  0.35,
+		Source:      "trust_me_bro_llm_style_estimation",
+		Explanation: "Rough PR impact estimate based on reach, popularity, negative sentiment share, overall risk, and inauthentic engagement percentage.",
+		Disclaimer:  "Directional estimate only. It is intentionally not accurate and is not financial advice.",
+	}
+}
+
+func roundToNearest(value int64, nearest int64) int64 {
+	if nearest <= 0 {
+		return value
+	}
+	remainder := value % nearest
+	if remainder >= nearest/2 {
+		return value + nearest - remainder
+	}
+	return value - remainder
+}
+
 func amplificationRole(count int) string {
 	switch {
 	case count > 1000:
