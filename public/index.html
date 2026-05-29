@@ -68,6 +68,11 @@
           <label>Opponents / rivals <small>(comma separated)</small></label>
           <input type="text" id="f_opponents" placeholder="RivalCo" />
         </div>
+        <div class="field">
+          <label>Client / affiliate accounts to exclude <small>(comma separated handles)</small></label>
+          <input type="text" id="f_client_accounts" placeholder="@realDonaldTrump, @TeamTrump" />
+          <small class="hint">Posts authored by these accounts are filtered out so you only see external chatter.</small>
+        </div>
         <div class="grid-2">
           <div class="field">
             <label>Keywords to track <small>(comma separated)</small></label>
@@ -111,10 +116,21 @@
       <div class="dash-controls">
         <span id="dashStatus" class="status-pill">—</span>
         <button class="btn btn-secondary" onclick="runCrawl()" id="runBtn">Gather now</button>
+        <button class="btn btn-danger" onclick="stopCampaign()" id="stopBtn">Stop campaign</button>
         <button class="btn btn-ghost" onclick="refreshDashboard()">Refresh</button>
       </div>
     </div>
     <div id="dashStats" class="dash-stats"></div>
+    <div id="dashCharts" class="dash-charts hidden">
+      <div class="chart-card">
+        <h3>Bot/AI-driven vs organic by narrative</h3>
+        <canvas id="chartBot" height="220"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Estimated reach vs bot/AI-driven share</h3>
+        <canvas id="chartReach" height="220"></canvas>
+      </div>
+    </div>
     <h3 class="section-title">Narratives by priority</h3>
     <div id="narrativeCards" class="narrative-cards"></div>
     <div id="dashEmpty" class="empty-state hidden">
@@ -130,6 +146,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

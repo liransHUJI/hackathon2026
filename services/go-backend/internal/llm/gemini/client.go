@@ -3,15 +3,24 @@ package gemini
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 var ErrNotConfigured = errors.New("gemini is not configured")
+
+const defaultModel = "gemini-2.0-flash"
 
 type Client struct {
 	apiKey    string
 	model     string
 	fastModel string
+	http      *http.Client
+	mu        sync.Mutex
+	lastCall  time.Time
+	minGap    time.Duration
 }
 
 type PermutationResponse struct {
@@ -22,7 +31,24 @@ type PermutationResponse struct {
 }
 
 func New(apiKey, model, fastModel string) *Client {
-	return &Client{apiKey: apiKey, model: model, fastModel: fastModel}
+	return &Client{
+		apiKey:    apiKey,
+		model:     model,
+		fastModel: fastModel,
+		http:      &http.Client{Timeout: 60 * time.Second},
+		// Free-tier Gemini is heavily rate limited; space calls to avoid bursts.
+		minGap: 4 * time.Second,
+	}
+}
+
+// Configured reports whether a Gemini API key is available for live calls.
+func (c *Client) Configured() bool { return strings.TrimSpace(c.apiKey) != "" }
+
+func (c *Client) primaryModel() string {
+	if strings.TrimSpace(c.model) != "" {
+		return c.model
+	}
+	return defaultModel
 }
 
 func (c *Client) ModelName() string {

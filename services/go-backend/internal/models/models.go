@@ -427,6 +427,7 @@ type CampaignProfile struct {
 	Opponents         []string        `json:"opponents,omitempty"`
 	InterestGroups    []InterestGroup `json:"interest_groups,omitempty"`
 	ImportantAccounts []string        `json:"important_accounts,omitempty"`
+	ClientAccounts    []string        `json:"client_accounts,omitempty"`
 	TrustedSources    []string        `json:"trusted_sources,omitempty"`
 	HostileSources    []string        `json:"known_hostile_sources,omitempty"`
 	Languages         []string        `json:"languages"`
@@ -445,6 +446,7 @@ type CampaignRequest struct {
 	Opponents         []string        `json:"opponents,omitempty"`
 	InterestGroups    []InterestGroup `json:"interest_groups,omitempty"`
 	ImportantAccounts []string        `json:"important_accounts,omitempty"`
+	ClientAccounts    []string        `json:"client_accounts,omitempty"`
 	TrustedSources    []string        `json:"trusted_sources,omitempty"`
 	HostileSources    []string        `json:"known_hostile_sources,omitempty"`
 	Languages         []string        `json:"languages"`
@@ -618,6 +620,9 @@ type NarrativeCluster struct {
 	WhyItMatters             string                    `json:"why_it_matters"`
 	CapitalLossEstimate      CapitalLossEstimate       `json:"capital_loss_estimate"`
 	DecisionExplanation      string                    `json:"decision_explanation"`
+	CommitteeVerdict         *CommitteeVerdict         `json:"committee_verdict,omitempty"`
+	SpreadTimeline           []TimelineBucket          `json:"spread_timeline,omitempty"`
+	InteractionBreakdown     map[string]int            `json:"interaction_breakdown,omitempty"`
 	CreatedAt                time.Time                 `json:"created_at"`
 	UpdatedAt                time.Time                 `json:"updated_at"`
 }
@@ -631,6 +636,44 @@ type CapitalLossEstimate struct {
 	Source      string  `json:"source"`
 	Explanation string  `json:"explanation"`
 	Disclaimer  string  `json:"disclaimer"`
+}
+
+// ExpertAssessment is one member of the LLM committee weighing in on a narrative.
+type ExpertAssessment struct {
+	Expert     string  `json:"expert"`
+	Opinion    string  `json:"opinion"`
+	Severity   float64 `json:"severity"`
+	Confidence float64 `json:"confidence"`
+}
+
+// CommitteeVerdict is the LLM committee's judgment on a candidate narrative: whether it is
+// relevant and actionable for the campaign manager, whether it originates from the client's own
+// camp (and should be filtered out), the estimated reputational/capital impact, and per-expert
+// reasoning. Source is "gemini" for live LLM output or "heuristic" for the deterministic fallback.
+type CommitteeVerdict struct {
+	Relevant          bool                `json:"relevant"`
+	RelevanceScore    float64             `json:"relevance_score"`
+	InterestScore     float64             `json:"interest_score"`
+	ImpactSummary     string              `json:"impact_summary"`
+	AudienceEffect    string              `json:"audience_effect"`
+	ClientOriginated  bool                `json:"client_originated"`
+	OriginRationale   string              `json:"origin_rationale"`
+	ConsensusLabel    string              `json:"consensus_label"`
+	RecommendedAction string              `json:"recommended_action"`
+	Experts           []ExpertAssessment  `json:"experts"`
+	CapitalLoss       CapitalLossEstimate `json:"capital_loss"`
+	Source            string              `json:"source"`
+}
+
+// TimelineBucket is one time slice of a narrative's spread, split by actor authenticity so the
+// dashboard can chart organic vs bot/AI-driven activity over time.
+type TimelineBucket struct {
+	T           time.Time `json:"t"`
+	Total       int       `json:"total"`
+	Authentic   int       `json:"authentic"`
+	Inauthentic int       `json:"inauthentic"`
+	Unknown     int       `json:"unknown"`
+	Reach       int64     `json:"reach"`
 }
 
 type SourcePopularity struct {
@@ -669,6 +712,15 @@ type NarrativeCard struct {
 	WhyItMatters           string                    `json:"why_it_matters"`
 	CapitalLossEstimate    CapitalLossEstimate       `json:"capital_loss_estimate"`
 	DashboardPriority      float64                   `json:"dashboard_priority"`
+	RelevanceScore         float64                   `json:"relevance_score"`
+	ImpactSummary          string                    `json:"impact_summary"`
+	OverallRisk            float64                   `json:"overall_risk"`
+	RiskLabel              string                    `json:"risk_label"`
+	BotCoordinationRisk    float64                   `json:"bot_coordination_risk"`
+	AIGenerationRisk       float64                   `json:"ai_generation_risk"`
+	CommitteeVerdict       *CommitteeVerdict         `json:"committee_verdict,omitempty"`
+	SpreadTimeline         []TimelineBucket          `json:"spread_timeline,omitempty"`
+	InteractionBreakdown   map[string]int            `json:"interaction_breakdown,omitempty"`
 	Status                 EngineStatus              `json:"status"`
 	InsufficientDataReason *string                   `json:"insufficient_data_reason,omitempty"`
 }

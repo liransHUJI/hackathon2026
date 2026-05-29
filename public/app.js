@@ -7,6 +7,34 @@ let state = {
   pollTimer: null,
 };
 
+// ---------- Chart helpers ----------
+const charts = {};
+const COLOR_ORGANIC = "#00d4aa";
+const COLOR_BOT = "#ff6b9d";
+const COLOR_UNKNOWN = "#5a6b8c";
+const COLOR_ACCENT = "#4facfe";
+
+function destroyChart(id) {
+  if (charts[id]) {
+    charts[id].destroy();
+    delete charts[id];
+  }
+}
+
+function makeChart(id, config) {
+  const el = document.getElementById(id);
+  if (!el || typeof Chart === "undefined") return;
+  destroyChart(id);
+  Chart.defaults.color = "#9fb0cc";
+  Chart.defaults.font.family = "inherit";
+  charts[id] = new Chart(el.getContext("2d"), config);
+}
+
+function truncateLabel(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   loadCampaigns();
 });
@@ -159,6 +187,7 @@ async function submitCampaign(ev) {
     region: document.getElementById("f_region").value.trim(),
     monitored_topics: csv(document.getElementById("f_topics").value),
     opponents: csv(document.getElementById("f_opponents").value),
+    client_accounts: csv(document.getElementById("f_client_accounts").value),
     interest_groups: interestGroups,
     languages: ["en"],
     crawl_budget: {
@@ -231,13 +260,24 @@ function renderDashboard(snapshot, status) {
   const effStatus = (status && status.status) || snapshot.status || "unknown";
   statusEl.textContent = effStatus;
   statusEl.className = "status-pill status-" + effStatus;
+  const stopBtn = document.getElementById("stopBtn");
 
   if (effStatus === "running") {
     document.getElementById("runBtn").disabled = true;
     document.getElementById("runBtn").textContent = "Gathering…";
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Stop campaign";
+  } else if (effStatus === "stopped") {
+    document.getElementById("runBtn").disabled = false;
+    document.getElementById("runBtn").textContent = "Gather now";
+    stopBtn.disabled = true;
+    stopBtn.textContent = "Stopped";
+    stopPolling();
   } else {
     document.getElementById("runBtn").disabled = false;
     document.getElementById("runBtn").textContent = "Gather now";
+    stopBtn.disabled = false;
+    stopBtn.textContent = "Stop campaign";
     if (effStatus !== "running") stopPolling();
   }
 
@@ -278,6 +318,77 @@ function renderDashboard(snapshot, status) {
   }
   empty.classList.add("hidden");
   container.innerHTML = cards.map((c, i) => narrativeCardHtml(c, i)).join("");
+  renderDashboardCharts(cards);
+}
+
+function renderDashboardCharts(cards) {
+  const wrap = document.getElementById("dashCharts");
+  if (!cards.length) {
+    wrap.classList.add("hidden");
+    destroyChart("chartBot");
+    destroyChart("chartReach");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  const labels = cards.map((c) => truncateLabel(c.narrative || "Narrative", 26));
+
+  makeChart("chartBot", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Bot/AI-driven %",
+          data: cards.map((c) => Math.round(c.inauthentic_percentage || 0)),
+          backgroundColor: COLOR_BOT,
+        },
+        {
+          label: "Organic %",
+          data: cards.map((c) => Math.round(c.authentic_percentage || 0)),
+          backgroundColor: COLOR_ORGANIC,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      indexAxis: "y",
+      scales: { x: { stacked: true, max: 100 }, y: { stacked: true } },
+      plugins: { legend: { position: "bottom" } },
+    },
+  });
+
+  makeChart("chartReach", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Estimated reach",
+          data: cards.map((c) => c.reach_estimate || 0),
+          backgroundColor: cards.map((c) =>
+            (c.inauthentic_percentage || 0) >= 40 ? COLOR_BOT : COLOR_ACCENT
+          ),
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            afterLabel: (ctx) =>
+              `Bot/AI-driven: ${Math.round(
+                cards[ctx.dataIndex].inauthentic_percentage || 0
+              )}%`,
+          },
+        },
+      },
+    },
+  });
 }
 
 function statCard(label, value, tone) {
@@ -290,6 +401,22 @@ function narrativeCardHtml(c, idx) {
   const unknown = c.unknown_percentage || 0;
   const trendIcon =
     c.trend === "rising" ? "↑" : c.trend === "falling" ? "↓" : "→";
+  const impact = c.impact_summary || c.why_it_matters || "";
+  const loss = c.capital_loss_estimate || {};
+  const committee = c.committee_verdict || {};
+  const llmTag =
+    committee.source === "gemini"
+      ? `<span class="ai-chip" title="${escapeAttr(
+          committee.consensus_label || "AI committee"
+        )}">AI committee</span>`
+      : "";
+  const lossChip =
+    loss.applies && loss.expected_usd
+      ? `<span class="loss-chip" title="${escapeAttr(
+          loss.explanation || ""
+        )}">⚠ ~${formatUSD(loss.expected_usd)} at risk</span>`
+      : "";
+  const relevance = Math.round((c.relevance_score || 0) * 100);
   return `
   <div class="narrative-card" onclick="openNarrative('${c.narrative_id}')">
     <div class="nc-rank">#${c.popularity_rank || idx + 1}</div>
@@ -298,6 +425,12 @@ function narrativeCardHtml(c, idx) {
         <h4>${escapeHtml(c.narrative || "Narrative")}</h4>
         <span class="trend trend-${c.trend || "flat"}">${trendIcon} ${c.trend || "flat"}</span>
       </div>
+      <div class="nc-chips">
+        ${llmTag}
+        ${relevance ? `<span class="rel-chip" title="Relevance to your campaign">${relevance}% relevant</span>` : ""}
+        ${lossChip}
+      </div>
+      ${impact ? `<p class="nc-impact">${escapeHtml(impact)}</p>` : ""}
       <p class="nc-summary">${escapeHtml(c.summary || "")}</p>
       ${authenticityBar(auth, inauth, unknown)}
       <div class="nc-stats">
@@ -308,6 +441,14 @@ function narrativeCardHtml(c, idx) {
       </div>
     </div>
   </div>`;
+}
+
+function formatUSD(n) {
+  n = n || 0;
+  if (n >= 1e9) return "$" + (n / 1e9).toFixed(1) + "B";
+  if (n >= 1e6) return "$" + (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return "$" + (n / 1e3).toFixed(0) + "K";
+  return "$" + n;
 }
 
 function authenticityBar(auth, inauth, unknown) {
@@ -339,6 +480,25 @@ async function runCrawl() {
     refreshDashboard();
   } catch (e) {
     toast("Could not start crawl: " + e.message, true);
+  }
+}
+
+async function stopCampaign() {
+  const id = state.currentCampaignId;
+  if (!id) return;
+  const btn = document.getElementById("stopBtn");
+  btn.disabled = true;
+  btn.textContent = "Stopping…";
+  try {
+    await api(`/v1/campaigns/${id}/crawl/stop`, { method: "POST" });
+    toast("Campaign stopped. Scheduled/background crawls will no longer run.");
+    stopPolling();
+    await loadCampaigns();
+    await refreshDashboard();
+  } catch (e) {
+    toast("Could not stop campaign: " + e.message, true);
+    btn.disabled = false;
+    btn.textContent = "Stop campaign";
   }
 }
 
@@ -395,6 +555,14 @@ function renderNarrative(detail, interactions, actors) {
     </div>
     <p class="nd-summary">${escapeHtml(n.summary || "")}</p>
 
+    ${committeePanelHtml(n)}
+
+    <div class="card">
+      <h3>Narrative spread over time</h3>
+      <canvas id="chartTimeline" height="200"></canvas>
+      <p class="muted">Posts and interactions over time, split by organic vs bot/AI-driven accounts.</p>
+    </div>
+
     <div class="nd-grid">
       <div class="card">
         <h3>Bot/AI vs organic engagement</h3>
@@ -404,11 +572,12 @@ function renderNarrative(detail, interactions, actors) {
           <span><i class="dot bot"></i> Bot/AI-driven ${inauth.toFixed(0)}%</span>
           <span><i class="dot unknown"></i> Unknown ${unknown.toFixed(0)}%</span>
         </div>
-        <p class="muted">${escapeHtml(n.why_it_matters || "")}</p>
+        <p class="muted">${escapeHtml(impactSummaryText(n))}</p>
       </div>
 
       <div class="card">
         <h3>Interaction breakdown</h3>
+        <canvas id="chartInteractions" height="160"></canvas>
         <div class="kv-list">
           ${interactionRow("💬 Replies / comments", typeCounts.reply)}
           ${interactionRow("🔁 Reposts / retweets", typeCounts.repost)}
@@ -469,6 +638,178 @@ function renderNarrative(detail, interactions, actors) {
         : ""
     }
   `;
+
+  initNarrativeCharts(n, typeCounts);
+}
+
+function impactSummaryText(n) {
+  const v = n.committee_verdict || {};
+  return v.impact_summary || n.why_it_matters || "";
+}
+
+function committeePanelHtml(n) {
+  const v = n.committee_verdict;
+  const loss = (v && v.capital_loss) || n.capital_loss_estimate || {};
+  const isLive = v && v.source === "gemini";
+  const expertsHtml =
+    v && (v.experts || []).length
+      ? v.experts
+          .map(
+            (e) => `
+        <div class="expert">
+          <div class="expert-head">
+            <strong>${escapeHtml(e.expert || "Expert")}</strong>
+            <span class="sev sev-${e.severity >= 0.66 ? "high" : e.severity >= 0.33 ? "mid" : "low"}">severity ${Math.round(
+              (e.severity || 0) * 100
+            )}%</span>
+          </div>
+          <p>${escapeHtml(e.opinion || "")}</p>
+        </div>`
+          )
+          .join("")
+      : `<p class="muted">No expert committee output (LLM unavailable — deterministic scoring used).</p>`;
+
+  const lossBlock =
+    loss && loss.applies && (loss.expected_usd || loss.max_usd)
+      ? `<div class="loss-box">
+          <div class="loss-head">Estimated capital at risk</div>
+          <div class="loss-range">
+            <span class="loss-lo">${formatUSD(loss.min_usd)}</span>
+            <span class="loss-exp">${formatUSD(loss.expected_usd)}</span>
+            <span class="loss-hi">${formatUSD(loss.max_usd)}</span>
+          </div>
+          <div class="loss-labels"><span>low</span><span>likely</span><span>high</span></div>
+          <p class="muted">${escapeHtml(loss.explanation || "")}</p>
+          <p class="loss-conf">Confidence ${Math.round((loss.confidence || 0) * 100)}% · ${escapeHtml(
+          loss.disclaimer || "Directional estimate."
+        )}</p>
+        </div>`
+      : `<p class="muted">No material capital loss estimated for this narrative.</p>`;
+
+  return `
+  <div class="card committee-card">
+    <div class="committee-head">
+      <h3>Expert committee assessment</h3>
+      <span class="${isLive ? "ai-chip" : "heur-chip"}">${
+    isLive ? "Live AI committee" : "Heuristic fallback"
+  }</span>
+    </div>
+    ${
+      v
+        ? `<div class="committee-grid">
+            <div>
+              ${v.consensus_label ? `<p><span class="muted">Consensus:</span> <strong>${escapeHtml(v.consensus_label)}</strong></p>` : ""}
+              ${v.audience_effect ? `<p><span class="muted">Audience effect:</span> ${escapeHtml(v.audience_effect)}</p>` : ""}
+              ${v.recommended_action ? `<p class="rec-action"><span class="muted">Recommended action:</span> ${escapeHtml(v.recommended_action)}</p>` : ""}
+              ${v.origin_rationale ? `<p class="muted origin-note">Origin check: ${escapeHtml(v.origin_rationale)}</p>` : ""}
+            </div>
+            <div>${lossBlock}</div>
+          </div>
+          <div class="experts">${expertsHtml}</div>`
+        : `<div class="committee-grid"><div><p class="muted">Awaiting committee assessment.</p></div><div>${lossBlock}</div></div>`
+    }
+  </div>`;
+}
+
+function initNarrativeCharts(n, typeCounts) {
+  // Spread-over-time line: organic vs bot/AI vs unknown.
+  const tl = n.spread_timeline || [];
+  if (tl.length) {
+    const labels = tl.map((b) => formatTimeShort(b.t));
+    makeChart("chartTimeline", {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Organic",
+            data: tl.map((b) => b.authentic || 0),
+            borderColor: COLOR_ORGANIC,
+            backgroundColor: COLOR_ORGANIC + "33",
+            fill: true,
+            tension: 0.3,
+          },
+          {
+            label: "Bot/AI-driven",
+            data: tl.map((b) => b.inauthentic || 0),
+            borderColor: COLOR_BOT,
+            backgroundColor: COLOR_BOT + "33",
+            fill: true,
+            tension: 0.3,
+          },
+          {
+            label: "Unknown",
+            data: tl.map((b) => b.unknown || 0),
+            borderColor: COLOR_UNKNOWN,
+            backgroundColor: COLOR_UNKNOWN + "22",
+            fill: true,
+            tension: 0.3,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        scales: { y: { beginAtZero: true, stacked: true }, x: { stacked: true } },
+        plugins: { legend: { position: "bottom" } },
+      },
+    });
+  } else {
+    destroyChart("chartTimeline");
+  }
+
+  // Interaction breakdown doughnut.
+  const breakdown = n.interaction_breakdown || typeCounts;
+  const order = ["reply", "repost", "quote", "subtweet", "post"];
+  const labelMap = {
+    reply: "Replies",
+    repost: "Reposts",
+    quote: "Quotes",
+    subtweet: "Subtweets",
+    post: "Other posts",
+  };
+  const present = order.filter((k) => (breakdown[k] || 0) > 0);
+  if (present.length) {
+    makeChart("chartInteractions", {
+      type: "doughnut",
+      data: {
+        labels: present.map((k) => labelMap[k]),
+        datasets: [
+          {
+            data: present.map((k) => breakdown[k] || 0),
+            backgroundColor: [
+              COLOR_ACCENT,
+              COLOR_ORGANIC,
+              "#ffa502",
+              COLOR_BOT,
+              COLOR_UNKNOWN,
+            ],
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: "right" } },
+      },
+    });
+  } else {
+    destroyChart("chartInteractions");
+  }
+}
+
+function formatTimeShort(s) {
+  try {
+    const d = new Date(s);
+    return d.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+    });
+  } catch (_) {
+    return s;
+  }
 }
 
 function interactionRow(label, count) {

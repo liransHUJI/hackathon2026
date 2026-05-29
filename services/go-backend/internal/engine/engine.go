@@ -12,6 +12,7 @@ import (
 
 	"github.com/hnweb/provenance/internal/config"
 	"github.com/hnweb/provenance/internal/db"
+	"github.com/hnweb/provenance/internal/llm/gemini"
 	"github.com/hnweb/provenance/internal/models"
 	"github.com/hnweb/provenance/internal/providers"
 	"github.com/hnweb/provenance/internal/scoring"
@@ -21,10 +22,11 @@ type Engine struct {
 	cfg      config.Config
 	store    *db.Store
 	registry *providers.Registry
+	gemini   *gemini.Client
 }
 
-func New(cfg config.Config, store *db.Store, registry *providers.Registry) *Engine {
-	return &Engine{cfg: cfg, store: store, registry: registry}
+func New(cfg config.Config, store *db.Store, registry *providers.Registry, geminiClient *gemini.Client) *Engine {
+	return &Engine{cfg: cfg, store: store, registry: registry, gemini: geminiClient}
 }
 
 func (e *Engine) CreateCampaign(ctx context.Context, req models.CampaignRequest) (*models.CampaignProfile, error) {
@@ -62,6 +64,7 @@ func (e *Engine) CreateCampaign(ctx context.Context, req models.CampaignRequest)
 		Opponents:         req.Opponents,
 		InterestGroups:    req.InterestGroups,
 		ImportantAccounts: req.ImportantAccounts,
+		ClientAccounts:    req.ClientAccounts,
 		TrustedSources:    req.TrustedSources,
 		HostileSources:    req.HostileSources,
 		Languages:         req.Languages,
@@ -124,6 +127,7 @@ func (e *Engine) CreateCampaignObject(campaignID string, req models.CampaignRequ
 		Opponents:         req.Opponents,
 		InterestGroups:    req.InterestGroups,
 		ImportantAccounts: req.ImportantAccounts,
+		ClientAccounts:    req.ClientAccounts,
 		TrustedSources:    req.TrustedSources,
 		HostileSources:    req.HostileSources,
 		Languages:         req.Languages,
@@ -161,7 +165,23 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 	if err := e.store.SaveSourceItems(ctx, campaignID, sources); err != nil {
 		return models.DiscoveryRunResponse{}, err
 	}
-	narratives := e.discoverNarratives(*campaign, sources)
+	candidates := e.discoverNarratives(*campaign, sources)
+	// LLM committee (single batched call) judges relevance, client-origin and impact BEFORE we
+	// spend interaction budget. Irrelevant or client-originated narratives are filtered out here.
+	verdicts := e.assessNarratives(ctx, *campaign, candidates, sources)
+	narratives := make([]models.NarrativeCluster, 0, len(candidates))
+	for idx := range candidates {
+		verdict := verdicts[candidates[idx].NarrativeID]
+		if !verdict.Relevant || verdict.ClientOriginated {
+			continue
+		}
+		v := verdict
+		candidates[idx].CommitteeVerdict = &v
+		if v.RelevanceScore > candidates[idx].RelevanceScore {
+			candidates[idx].RelevanceScore = v.RelevanceScore
+		}
+		narratives = append(narratives, candidates[idx])
+	}
 	totalInteractions := 0
 	for idx := range narratives {
 		interactionTarget := campaign.CrawlBudget.InteractionsPerNarrative
@@ -235,6 +255,9 @@ func (e *Engine) collectionTargets(campaign models.CampaignProfile) []models.Col
 		if strings.TrimSpace(query) == "" {
 			continue
 		}
+		// Twitter/X only. Per product requirement, general web sources are NOT used to build
+		// narratives; web is reserved solely for confirming whether a narrative originates from
+		// the client/affiliates (handled in the committee step).
 		targets = append(targets, models.CollectionTarget{
 			CampaignID: campaign.CampaignID,
 			Query:      query,
@@ -243,24 +266,22 @@ func (e *Engine) collectionTargets(campaign models.CampaignProfile) []models.Col
 			Languages:  campaign.Languages,
 			Region:     campaign.Region,
 		})
-		targets = append(targets, models.CollectionTarget{
-			CampaignID: campaign.CampaignID,
-			Query:      query,
-			Source:     "web",
-			MaxResults: maxInt(10, max/maxInt(4, len(queries)*4)),
-			Languages:  campaign.Languages,
-			Region:     campaign.Region,
-		})
 	}
 	return targets
 }
 
 func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []models.SourceItem) []models.NarrativeCluster {
+	clientFilter := newClientAccountFilter(campaign)
 	buckets := []*narrativeBucket{}
 	for idx := range sources {
 		source := sources[idx]
 		text := firstNonEmpty(source.Text, source.Title, source.Snippet)
 		if text == "" {
+			continue
+		}
+		// Drop the client's own / affiliate posts: the manager wants EXTERNAL chatter, not their
+		// own messaging amplified back to them.
+		if clientFilter.authoredByClient(source) {
 			continue
 		}
 		match := matchBucket(buckets, source, text)
@@ -511,6 +532,28 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 	narrative.WhyItMatters = whyItMatters(*narrative)
 	narrative.CapitalLossEstimate = scoring.CapitalLossEstimate(*narrative)
 	narrative.DecisionExplanation = decisionExplanation(*narrative)
+	narrative.SpreadTimeline = spreadTimeline(sources, interactions, classifications)
+	narrative.InteractionBreakdown = interactionBreakdown(interactions)
+	// Prefer the LLM committee's judgments where available; otherwise enrich the deterministic
+	// fallback verdict with metric-derived experts and a capital-loss range so the dashboard stays
+	// demo-worthy even when the live committee is unavailable.
+	if v := narrative.CommitteeVerdict; v != nil {
+		if v.Source != "gemini" {
+			enrichHeuristicVerdict(narrative)
+		}
+		if strings.TrimSpace(v.ImpactSummary) != "" {
+			narrative.WhyItMatters = v.ImpactSummary
+		}
+		if strings.TrimSpace(v.RecommendedAction) != "" {
+			narrative.RecommendedPRAction = v.RecommendedAction
+		}
+		if v.RelevanceScore > narrative.RelevanceScore {
+			narrative.RelevanceScore = v.RelevanceScore
+		}
+		if v.CapitalLoss.Applies && v.CapitalLoss.ExpectedUSD > 0 {
+			narrative.CapitalLossEstimate = v.CapitalLoss
+		}
+	}
 	narrative.UpdatedAt = time.Now().UTC()
 }
 
@@ -547,6 +590,15 @@ func (e *Engine) snapshot(campaignID string, narratives []models.NarrativeCluste
 			WhyItMatters:           narrative.WhyItMatters,
 			CapitalLossEstimate:    narrative.CapitalLossEstimate,
 			DashboardPriority:      scoring.DashboardPriority(narrative.PopularityScore, narrative.InauthenticPercentage, sourcePopularityScore, velocityScore(narrative.VelocityPerHour), narrative.RelevanceScore),
+			RelevanceScore:         narrative.RelevanceScore,
+			ImpactSummary:          impactSummary(narrative),
+			OverallRisk:            narrative.OverallRisk,
+			RiskLabel:              narrative.RiskLabel,
+			BotCoordinationRisk:    narrative.BotCoordinationRisk,
+			AIGenerationRisk:       narrative.AIGenerationRisk,
+			CommitteeVerdict:       narrative.CommitteeVerdict,
+			SpreadTimeline:         narrative.SpreadTimeline,
+			InteractionBreakdown:   narrative.InteractionBreakdown,
 			Status:                 narrativeStatus(narrative),
 			InsufficientDataReason: narrative.InsufficientDataReason,
 		}

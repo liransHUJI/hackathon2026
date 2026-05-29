@@ -74,6 +74,7 @@ body {
 .btn-primary { background: linear-gradient(135deg, var(--primary), var(--teal)); color: #05121b; }
 .btn-secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
 .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+.btn-danger { background: rgba(255, 92, 108, 0.12); color: #ffb3bb; border: 1px solid rgba(255, 92, 108, 0.45); }
 
 /* ---------- Views ---------- */
 .view { max-width: 1100px; margin: 0 auto; padding: 30px 28px 80px; }
@@ -309,6 +310,55 @@ body {
 
 @media (max-width: 800px) {
   .dash-stats { grid-template-columns: 1fr 1fr; }
-  .nd-grid, .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .nd-grid, .grid-2, .grid-3, .dash-charts, .committee-grid { grid-template-columns: 1fr; }
   .dash-head { flex-direction: column; }
 }
+
+/* ---------- Charts ---------- */
+.dash-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 28px; }
+.chart-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.chart-card h3 { margin: 0 0 12px; font-size: 14px; color: var(--muted); }
+.chart-card canvas { max-height: 240px; }
+
+/* ---------- Narrative card extras ---------- */
+.nc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.ai-chip, .rel-chip, .loss-chip, .heur-chip {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+}
+.ai-chip { background: rgba(79,172,254,0.15); color: var(--primary); border: 1px solid rgba(79,172,254,0.4); }
+.heur-chip { background: rgba(139,151,173,0.15); color: var(--muted); border: 1px solid var(--border); }
+.rel-chip { background: rgba(0,212,170,0.13); color: var(--teal); border: 1px solid rgba(0,212,170,0.35); }
+.loss-chip { background: rgba(255,92,108,0.14); color: #ffb3bb; border: 1px solid rgba(255,92,108,0.4); }
+.nc-impact { font-size: 13px; color: var(--text); margin: 4px 0 8px; line-height: 1.45; }
+
+/* ---------- Committee panel ---------- */
+.committee-card { border-color: rgba(79,172,254,0.3); }
+.committee-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.committee-head h3 { margin: 0; }
+.committee-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 18px; }
+.committee-grid p { margin: 0 0 8px; font-size: 14px; line-height: 1.5; }
+.rec-action { color: var(--text); }
+.origin-note { font-size: 12px; }
+.experts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 14px; }
+.expert { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.expert-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+.expert p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.sev { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+.sev-high { background: rgba(255,92,108,0.18); color: #ffb3bb; }
+.sev-mid { background: rgba(255,165,2,0.18); color: #ffd99a; }
+.sev-low { background: rgba(0,212,170,0.16); color: var(--teal); }
+
+/* ---------- Capital loss box ---------- */
+.loss-box { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.loss-head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+.loss-range { display: flex; justify-content: space-between; align-items: baseline; }
+.loss-range .loss-lo, .loss-range .loss-hi { font-size: 14px; color: var(--muted); }
+.loss-range .loss-exp { font-size: 24px; font-weight: 700; color: #ffb3bb; }
+.loss-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 2px; }
+.loss-conf { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.hint { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }

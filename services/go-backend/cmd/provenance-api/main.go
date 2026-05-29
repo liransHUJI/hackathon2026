@@ -66,7 +66,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	engineService := engine.New(cfg, store, registry)
+	engineService := engine.New(cfg, store, registry, geminiClient)
 	go retentionLoop(ctx, store, logger)
 	go scheduler.New(cfg, engineService, logger).Start(ctx)
 
