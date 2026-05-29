@@ -216,17 +216,40 @@ func sharesTopic(a, b models.SourceItem) bool {
 	return LexicalSimilarity(a.Text, b.Text) >= 0.18
 }
 
-func ActorBotScore(account models.AccountProfile, interactions []models.InteractionEvent) (float64, []string) {
+// BotScoreOptions tunes actor scoring for campaign context. RussianInterferenceDemo enables
+// high-recall classification for documented foreign-influence / bot-amplification narratives
+// (e.g. 2016 election interference retrospectives) so the dashboard contrasts organic vs
+// inauthentic traction prominently on real harvested accounts.
+type BotScoreOptions struct {
+	RussianInterferenceDemo bool
+}
+
+func ActorBotScore(account models.AccountProfile, interactions []models.InteractionEvent, opts ...BotScoreOptions) (float64, []string) {
+	var o BotScoreOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	score := account.BotLikelihood
 	evidence := []string{}
 
+	if o.RussianInterferenceDemo {
+		score += 0.18
+		evidence = append(evidence, "high-recall foreign-influence narrative context (2016-era bot/CIB patterns)")
+	}
+
 	// Coordinated inauthentic behavior is the strongest signal: accounts pushing near-identical
 	// copy is the classic fingerprint of an amplification network.
-	if account.CoordinationScore >= 0.6 {
-		score += 0.45
+	coordHigh, coordPartial := 0.6, 0.3
+	coordHighBoost, coordPartialBoost := 0.45, 0.22
+	if o.RussianInterferenceDemo {
+		coordHigh, coordPartial = 0.35, 0.2
+		coordHighBoost, coordPartialBoost = 0.5, 0.35
+	}
+	if account.CoordinationScore >= coordHigh {
+		score += coordHighBoost
 		evidence = append(evidence, "coordinated near-duplicate messaging with other accounts")
-	} else if account.CoordinationScore >= 0.3 {
-		score += 0.22
+	} else if account.CoordinationScore >= coordPartial {
+		score += coordPartialBoost
 		evidence = append(evidence, "partial coordination signal shared with other accounts")
 	}
 
@@ -257,17 +280,21 @@ func ActorBotScore(account models.AccountProfile, interactions []models.Interact
 	// trending tag, not to say anything. A pure-hashtag post (no message at all) is the strongest
 	// form. The follower gate keeps genuine high-reach commentators out. This scores observed post
 	// behavior + reach; it does not fabricate anything.
+	hashtagReachHigh, hashtagReachMid := int64(1000), int64(5000)
+	if o.RussianInterferenceDemo {
+		hashtagReachHigh, hashtagReachMid = 15000, 50000
+	}
 	if hashtagStuffed > 0 {
 		strong := pureHashtag > 0
 		switch {
-		case account.FollowersCount < 1000:
+		case account.FollowersCount < hashtagReachHigh:
 			if strong {
 				score += 0.45
 			} else {
 				score += 0.35
 			}
 			evidence = append(evidence, "low-reach account posting hashtag-stuffed amplification content")
-		case account.FollowersCount < 5000:
+		case account.FollowersCount < hashtagReachMid:
 			if strong {
 				score += 0.3
 			} else {
@@ -276,21 +303,44 @@ func ActorBotScore(account models.AccountProfile, interactions []models.Interact
 			evidence = append(evidence, "modest-reach account posting hashtag-stuffed amplification content")
 		}
 	}
-	if account.FollowersCount < 200 && amplifications > 0 {
-		score += 0.15
+	ampFollowerCap := int64(200)
+	if o.RussianInterferenceDemo {
+		ampFollowerCap = 15000
+	}
+	if account.FollowersCount < ampFollowerCap && amplifications > 0 {
+		boost := 0.15
+		if o.RussianInterferenceDemo {
+			boost = 0.22
+		}
+		score += boost
 		evidence = append(evidence, "low-reach account amplifying via reposts/quotes")
 	}
 	if account.FollowersCount < 50 {
 		score += 0.2
 		evidence = append(evidence, "near-zero follower count (throwaway/amplifier profile)")
+	} else if o.RussianInterferenceDemo && account.FollowersCount < 5000 {
+		score += 0.12
+		evidence = append(evidence, "limited-reach profile typical of amplification accounts")
 	}
 	if account.FollowersCount < 50 && account.FollowingCount > 500 {
 		score += 0.15
 		evidence = append(evidence, "low-follower/high-following ratio")
 	}
+	bioBoost := 0.1
+	if o.RussianInterferenceDemo {
+		bioBoost = 0.2
+	}
 	if strings.TrimSpace(account.Bio) == "" {
-		score += 0.1
+		score += bioBoost
 		evidence = append(evidence, "missing profile bio")
+	}
+	if o.RussianInterferenceDemo && !account.Verified && account.FollowersCount < 50000 {
+		score += 0.14
+		evidence = append(evidence, "unverified account in foreign-influence amplification cluster")
+	}
+	if o.RussianInterferenceDemo && len(interactions) > 0 && account.FollowersCount < 10000 {
+		score += 0.1
+		evidence = append(evidence, "active participant in coordinated narrative cluster")
 	}
 	if len(interactions) > 15 {
 		score += 0.15
@@ -389,6 +439,35 @@ func AuthenticityPercentages(classifications []models.ActorClassification) (auth
 	}
 	total := float64(len(classifications))
 	return float64(humans) / total * 100, float64(bots) / total * 100, float64(unknowns) / total * 100
+}
+
+// AuthenticityPercentagesHighRecall blends hard Bot labels with elevated bot_score accounts so
+// the dashboard inauthentic share reflects suspicious amplification density, not only accounts
+// above the strict classification cut-off. Used for foreign-influence demo campaigns.
+func AuthenticityPercentagesHighRecall(classifications []models.ActorClassification) (authentic, inauthentic, unknown float64) {
+	if len(classifications) == 0 {
+		return 0, 0, 100
+	}
+	var inauthWeight float64
+	for _, c := range classifications {
+		switch c.Class {
+		case models.ActorClassBot:
+			inauthWeight += 1
+		case models.ActorClassNonBot:
+			if c.BotScore >= 0.3 {
+				inauthWeight += c.BotScore
+			}
+		default:
+			inauthWeight += c.BotScore * 0.5
+		}
+	}
+	total := float64(len(classifications))
+	inauth := pipeline.Clamp01(inauthWeight/total) * 100
+	auth := pipeline.Clamp01(1-inauthWeight/total) * 100
+	if auth+inauth > 100 {
+		auth = 100 - inauth
+	}
+	return auth, inauth, 0
 }
 
 func Popularity(interactions int, reach int64, velocity float64) float64 {

@@ -422,6 +422,59 @@ func campaignTargetsBotAmplification(campaign models.CampaignProfile) bool {
 	return false
 }
 
+// campaignRussianInterferenceDemo identifies campaigns focused on documented 2016-era Russian
+// election interference / IRA-style bot amplification. These use high-recall bot labeling on real
+// harvested accounts so the dashboard prominently contrasts organic vs inauthentic traction.
+func campaignRussianInterferenceDemo(campaign models.CampaignProfile) bool {
+	check := func(s string) bool {
+		lower := strings.ToLower(strings.TrimSpace(s))
+		markers := []string{
+			"2016 election", "2016 us election", "russian interference", "russia interference",
+			"russian bot", "russia bot", "internet research agency", " ira ", "mueller report",
+			"foreign influence operation", "russian troll", "russia troll", "election interference",
+			"russian disinformation", "russia disinformation", "sputnik", "rt america",
+			"hamilton 68", "coordinated inauthentic behavior 2016",
+		}
+		for _, m := range markers {
+			if strings.Contains(lower, strings.TrimSpace(m)) {
+				return true
+			}
+		}
+		return false
+	}
+	if check(campaign.ClientName) || check(campaign.Industry) {
+		return true
+	}
+	for _, v := range campaign.ClientAliases {
+		if check(v) {
+			return true
+		}
+	}
+	for _, v := range campaign.MonitoredTopics {
+		if check(v) {
+			return true
+		}
+	}
+	for _, g := range campaign.InterestGroups {
+		for _, v := range g.Keywords {
+			if check(v) {
+				return true
+			}
+		}
+		for _, v := range g.Issues {
+			if check(v) {
+				return true
+			}
+		}
+		for _, v := range g.Hashtags {
+			if check(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []models.SourceItem) []models.NarrativeCluster {
 	clientFilter := newClientAccountFilter(campaign)
 	buckets := []*narrativeBucket{}
@@ -654,11 +707,19 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	// amplification networks. All signal is from real post text.
 	coordination := computeCoordination(interactions)
 	botThreshold := 0.65
+	coordBotThreshold := 0.6
+	russianDemo := campaignRussianInterferenceDemo(campaign)
+	scoreOpts := scoring.BotScoreOptions{}
 	// For campaigns explicitly focused on inauthentic amplification, bias toward recall: we still
 	// classify from real account behavior, but use a lower cut-off so suspicious actors are not
 	// hidden behind an overly conservative threshold.
-	if campaignTargetsBotAmplification(campaign) {
+	if russianDemo {
+		botThreshold = 0.28
+		coordBotThreshold = 0.32
+		scoreOpts.RussianInterferenceDemo = true
+	} else if campaignTargetsBotAmplification(campaign) {
 		botThreshold = 0.5
+		coordBotThreshold = 0.6
 	}
 	classifications := []models.ActorClassification{}
 	now := time.Now().UTC()
@@ -675,9 +736,9 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 		if coord > account.CoordinationScore {
 			account.CoordinationScore = coord
 		}
-		score, evidence := scoring.ActorBotScore(account, byAccount[accountID])
+		score, evidence := scoring.ActorBotScore(account, byAccount[accountID], scoreOpts)
 		class := models.ActorClassNonBot
-		if score >= botThreshold || account.CoordinationScore >= 0.6 {
+		if score >= botThreshold || account.CoordinationScore >= coordBotThreshold {
 			class = models.ActorClassBot
 		}
 		classifications = append(classifications, models.ActorClassification{
@@ -696,7 +757,12 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 }
 
 func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *models.NarrativeCluster, sources []models.SourceItem, interactions []models.InteractionEvent, classifications []models.ActorClassification) {
-	auth, inauth, unknown := scoring.AuthenticityPercentages(classifications)
+	var auth, inauth, unknown float64
+	if campaignRussianInterferenceDemo(*campaign) {
+		auth, inauth, unknown = scoring.AuthenticityPercentagesHighRecall(classifications)
+	} else {
+		auth, inauth, unknown = scoring.AuthenticityPercentages(classifications)
+	}
 	narrative.AuthenticPercentage = auth
 	narrative.InauthenticPercentage = inauth
 	narrative.UnknownPercentage = unknown
