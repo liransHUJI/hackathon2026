@@ -317,15 +317,22 @@ func (p *Provider) FetchInteractions(ctx context.Context, source models.SourceIt
 // conversationQuery builds a keyword to discover the conversation around a post: the author
 // handle captures replies/quotes/reposts, biased toward the post's top hashtag when present.
 func conversationQuery(source models.SourceItem) string {
+	// Prefer the post's hashtag/slogan over the author handle: coordinated amplification lives in
+	// the long tail of accounts repeating the same hashtag/copy, whereas a handle query mostly
+	// surfaces the originator's own mentions. This biases interaction discovery toward the
+	// amplification network rather than the originating account.
+	if len(source.Hashtags) > 0 {
+		tag := strings.TrimSpace(source.Hashtags[0])
+		if tag != "" {
+			if !strings.HasPrefix(tag, "#") {
+				tag = "#" + tag
+			}
+			return tag
+		}
+	}
 	handle := strings.TrimPrefix(strings.TrimSpace(source.Author.Handle), "@")
 	if handle != "" {
-		if len(source.Hashtags) > 0 {
-			return handle + " " + source.Hashtags[0]
-		}
 		return handle
-	}
-	if len(source.Hashtags) > 0 {
-		return source.Hashtags[0]
 	}
 	fields := strings.Fields(source.Text)
 	if len(fields) > 6 {

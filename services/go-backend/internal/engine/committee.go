@@ -17,8 +17,7 @@ import (
 // normalized text, that text is treated as a coordinated template and every account using it is
 // flagged. A lighter signal is applied when only 2 accounts share a template.
 func computeCoordination(interactions []models.InteractionEvent) map[string]float64 {
-	textAccounts := map[string]map[string]bool{}
-	accountTexts := map[string][]string{}
+	c := newCoordIndex()
 	for _, it := range interactions {
 		text := ""
 		if it.Metadata != nil {
@@ -26,22 +25,74 @@ func computeCoordination(interactions []models.InteractionEvent) map[string]floa
 				text = s
 			}
 		}
-		norm := normalizeForCoord(text)
-		if norm == "" {
-			continue
-		}
-		if textAccounts[norm] == nil {
-			textAccounts[norm] = map[string]bool{}
-		}
-		textAccounts[norm][it.AccountID] = true
-		accountTexts[it.AccountID] = append(accountTexts[it.AccountID], norm)
+		c.add(it.AccountID, text)
 	}
+	return c.scores()
+}
+
+// corpusCoordination scores coordination across the whole campaign corpus (every collected source
+// post plus every harvested interaction), not just within a single narrative. A copy-paste
+// amplification army typically spreads the same slogan across many posts and clusters, so a
+// campaign-wide view catches accounts that a tiny per-narrative window would miss. All signal is
+// derived from real post text; nothing is fabricated.
+func corpusCoordination(sources []models.SourceItem, interactions []models.InteractionEvent) map[string]float64 {
+	c := newCoordIndex()
+	for _, s := range sources {
+		acc := s.Author.AccountID
+		if acc == "" {
+			acc = s.Author.Handle
+		}
+		c.add(acc, s.Text)
+	}
+	for _, it := range interactions {
+		text := ""
+		if it.Metadata != nil {
+			if v, ok := it.Metadata["text"].(string); ok {
+				text = v
+			}
+		}
+		c.add(it.AccountID, text)
+	}
+	return c.scores()
+}
+
+// coordIndex accumulates which distinct accounts posted each normalized template, then scores an
+// account by the most-shared template it participated in.
+type coordIndex struct {
+	textAccounts map[string]map[string]bool
+	accountTexts map[string][]string
+}
+
+func newCoordIndex() *coordIndex {
+	return &coordIndex{textAccounts: map[string]map[string]bool{}, accountTexts: map[string][]string{}}
+}
+
+func (c *coordIndex) add(account, text string) {
+	if account == "" {
+		return
+	}
+	norm := normalizeForCoord(text)
+	if norm == "" {
+		return
+	}
+	if c.textAccounts[norm] == nil {
+		c.textAccounts[norm] = map[string]bool{}
+	}
+	c.textAccounts[norm][account] = true
+	c.accountTexts[account] = append(c.accountTexts[account], norm)
+}
+
+func (c *coordIndex) scores() map[string]float64 {
 	scores := map[string]float64{}
-	for acc, norms := range accountTexts {
+	for acc, norms := range c.accountTexts {
 		best := 0.0
 		for _, n := range norms {
-			distinct := len(textAccounts[n])
+			distinct := len(c.textAccounts[n])
 			switch {
+			case distinct >= 5:
+				if best < 0.9 {
+					best = 0.9
+				}
 			case distinct >= 3:
 				if best < 0.85 {
 					best = 0.85

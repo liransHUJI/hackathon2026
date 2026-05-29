@@ -50,7 +50,12 @@ func (s *Scheduler) engineCampaigns(ctx context.Context) ([]string, error) {
 	}
 	ids := make([]string, 0, len(campaigns))
 	for _, campaign := range campaigns {
-		if campaign.Status != "stopped" {
+		// Only auto-crawl campaigns the user has left in the "active" monitoring state. Campaigns
+		// that are stopped, already running, or have completed a run are not re-triggered here
+		// (a run in flight is guarded separately, and completed/stopped campaigns are re-run only
+		// on explicit request). This prevents the scheduler from stacking endless overlapping
+		// crawls on the same campaign.
+		if campaign.Status == "active" {
 			ids = append(ids, campaign.CampaignID)
 		}
 	}

@@ -236,14 +236,53 @@ func ActorBotScore(account models.AccountProfile, interactions []models.Interact
 	}
 
 	amplifications := 0
+	hashtagStuffed := 0
+	pureHashtag := 0
 	for _, it := range interactions {
 		if it.InteractionType == "repost" || it.InteractionType == "quote" {
 			amplifications++
+		}
+		if text, ok := interactionText(it); ok {
+			switch classifyHashtagPost(text) {
+			case hashtagPostPure:
+				pureHashtag++
+				hashtagStuffed++
+			case hashtagPostDominated:
+				hashtagStuffed++
+			}
+		}
+	}
+	// Low-reach accounts whose contribution is hashtag-stuffed content with little or no original
+	// text are the signature of a hashtag-amplification network: their purpose is to inflate a
+	// trending tag, not to say anything. A pure-hashtag post (no message at all) is the strongest
+	// form. The follower gate keeps genuine high-reach commentators out. This scores observed post
+	// behavior + reach; it does not fabricate anything.
+	if hashtagStuffed > 0 {
+		strong := pureHashtag > 0
+		switch {
+		case account.FollowersCount < 1000:
+			if strong {
+				score += 0.45
+			} else {
+				score += 0.35
+			}
+			evidence = append(evidence, "low-reach account posting hashtag-stuffed amplification content")
+		case account.FollowersCount < 5000:
+			if strong {
+				score += 0.3
+			} else {
+				score += 0.22
+			}
+			evidence = append(evidence, "modest-reach account posting hashtag-stuffed amplification content")
 		}
 	}
 	if account.FollowersCount < 200 && amplifications > 0 {
 		score += 0.15
 		evidence = append(evidence, "low-reach account amplifying via reposts/quotes")
+	}
+	if account.FollowersCount < 50 {
+		score += 0.2
+		evidence = append(evidence, "near-zero follower count (throwaway/amplifier profile)")
 	}
 	if account.FollowersCount < 50 && account.FollowingCount > 500 {
 		score += 0.15
@@ -261,6 +300,62 @@ func ActorBotScore(account models.AccountProfile, interactions []models.Interact
 		evidence = append(evidence, "no strong bot indicators found")
 	}
 	return pipeline.Clamp01(score), evidence
+}
+
+func interactionText(it models.InteractionEvent) (string, bool) {
+	if it.Metadata == nil {
+		return "", false
+	}
+	if s, ok := it.Metadata["text"].(string); ok {
+		return s, true
+	}
+	return "", false
+}
+
+type hashtagPostKind int
+
+const (
+	hashtagPostNone hashtagPostKind = iota
+	hashtagPostDominated
+	hashtagPostPure
+)
+
+// classifyHashtagPost categorizes a post by how much it is pure tag-inflation. A "pure" post is
+// nothing but hashtags (and optionally mentions/URLs) — no message at all. A "dominated" post
+// carries a hashtag and almost no original wording. Both are amplification signatures; pure is the
+// strongest. Mentions and URLs do not count as content.
+func classifyHashtagPost(text string) hashtagPostKind {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(text)))
+	if len(fields) == 0 {
+		return hashtagPostNone
+	}
+	hashtags := 0
+	originalWords := 0
+	for _, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "#"):
+			hashtags++
+		case strings.HasPrefix(f, "@"), strings.HasPrefix(f, "http"):
+			// neither content nor hashtag
+		default:
+			originalWords++
+		}
+	}
+	switch {
+	case hashtags == 0:
+		return hashtagPostNone
+	case originalWords == 0:
+		return hashtagPostPure
+	case originalWords <= 4:
+		return hashtagPostDominated
+	default:
+		return hashtagPostNone
+	}
+}
+
+// hashtagDominated reports whether a post is hashtag-stuffing (dominated or pure).
+func hashtagDominated(text string) bool {
+	return classifyHashtagPost(text) != hashtagPostNone
 }
 
 // digitSuffix reports whether a handle ends in a long run of digits, a common trait of

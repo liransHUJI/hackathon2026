@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,11 @@ type Engine struct {
 	store    *db.Store
 	registry *providers.Registry
 	gemini   *gemini.Client
+	// inflight guards against overlapping discovery runs for the same campaign. The scheduler
+	// ticks on a fixed interval and a single live crawl can outlast that interval, so without
+	// this guard multiple RunDiscovery goroutines would stack up on one campaign and corrupt
+	// each other's snapshot/status (and waste duplicate Bright Data spend).
+	inflight sync.Map
 }
 
 func New(cfg config.Config, store *db.Store, registry *providers.Registry, geminiClient *gemini.Client) *Engine {
@@ -139,6 +145,18 @@ func (e *Engine) CreateCampaignObject(campaignID string, req models.CampaignRequ
 }
 
 func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.DiscoveryRunResponse, error) {
+	// Skip if a crawl for this campaign is already running (e.g. the scheduler ticked while a
+	// long live crawl is still in flight). Overlapping runs previously corrupted the dashboard
+	// snapshot and left the campaign status stuck on "running".
+	if _, loaded := e.inflight.LoadOrStore(campaignID, true); loaded {
+		return models.DiscoveryRunResponse{
+			CampaignID: campaignID,
+			Status:     models.EngineStatusRunning,
+			Message:    "discovery already in progress for this campaign",
+		}, nil
+	}
+	defer e.inflight.Delete(campaignID)
+
 	campaign, err := e.store.GetCampaign(ctx, campaignID)
 	if err != nil {
 		return models.DiscoveryRunResponse{}, err
@@ -191,6 +209,11 @@ func (e *Engine) processSources(ctx context.Context, campaign *models.CampaignPr
 		}
 		narratives = append(narratives, candidates[idx])
 	}
+	// Campaign-wide coordination: detect copy-paste amplification across the entire collected
+	// corpus (all source posts) so accounts spreading the same slogan across many narratives are
+	// flagged even when any single narrative only sees them once. Folded into per-narrative
+	// classification below.
+	baseCoord := corpusCoordination(sources, nil)
 	// Persisted narratives are tracked separately so the final snapshot reflects only what actually
 	// reached the store, even if the run is cut short by the discovery deadline.
 	persisted := make([]models.NarrativeCluster, 0, len(narratives))
@@ -203,7 +226,7 @@ func (e *Engine) processSources(ctx context.Context, campaign *models.CampaignPr
 		narrativeSources := sourcesForNarrative(narratives[idx], sources)
 		interactions, interactionFailures := e.harvestInteractions(ctx, narrativeSources, interactionTarget, useProvider)
 		failures = append(failures, interactionFailures...)
-		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions)
+		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions, baseCoord)
 		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
 		// The narrative row must exist before interactions/classifications reference it via FK.
 		// Save failures (e.g. a cancelled context near the deadline) are non-fatal: we skip this
@@ -328,7 +351,10 @@ func botIntentQueryVariants(campaign models.CampaignProfile, seedQueries []strin
 		if base == "" {
 			continue
 		}
-		if hasBotIntent(base) {
+		// Hashtag/slogan seeds are already a concrete, targeted coordinated-event query. Expanding
+		// them into "#tag bot network" style meta-queries surfaces journalists/researchers writing
+		// ABOUT the campaign instead of the amplification network itself, so we collect them as-is.
+		if hasBotIntent(base) || isHashtagQuery(base) {
 			add(base)
 			continue
 		}
@@ -337,16 +363,24 @@ func botIntentQueryVariants(campaign models.CampaignProfile, seedQueries []strin
 		}
 	}
 	for _, topic := range campaign.MonitoredTopics {
-		if strings.TrimSpace(topic) != "" {
-			add(topic + " synthetic engagement")
-			add(topic + " coordinated amplification")
+		topic = strings.TrimSpace(topic)
+		if topic == "" || isHashtagQuery(topic) {
+			continue
 		}
+		add(topic + " synthetic engagement")
+		add(topic + " coordinated amplification")
 	}
 	return variants
 }
 
+func isHashtagQuery(query string) bool {
+	return strings.HasPrefix(strings.TrimSpace(query), "#")
+}
+
 func queryWeight(query string) int {
-	if hasBotIntent(query) {
+	// Bot-intent and concrete hashtag/slogan queries target the coordinated content directly, so
+	// they receive the larger share of the collection budget.
+	if hasBotIntent(query) || isHashtagQuery(query) {
 		return 4
 	}
 	return 1
@@ -570,20 +604,30 @@ func truncateText(value string, limit int) string {
 	return string(runes[:limit])
 }
 
-func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID string, sources []models.SourceItem, interactions []models.InteractionEvent) []models.ActorClassification {
+func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID string, sources []models.SourceItem, interactions []models.InteractionEvent, baseCoord map[string]float64) []models.ActorClassification {
+	// accountKey mirrors how harvestInteractions keys accounts (account id, falling back to handle)
+	// so source authors and interaction authors line up under one identity.
+	accountKey := func(p models.AccountProfile) string {
+		if p.AccountID != "" {
+			return p.AccountID
+		}
+		return p.Handle
+	}
 	accounts := map[string]models.AccountProfile{}
 	for _, source := range sources {
-		if source.Author.AccountID != "" {
-			accounts[source.Author.AccountID] = source.Author
+		if key := accountKey(source.Author); key != "" {
+			accounts[key] = source.Author
 		}
 	}
 	for _, interaction := range interactions {
 		if interaction.Metadata == nil {
 			continue
 		}
-		if profile, ok := interaction.Metadata["author"].(models.AccountProfile); ok && profile.AccountID != "" {
-			if _, exists := accounts[profile.AccountID]; !exists {
-				accounts[profile.AccountID] = profile
+		if profile, ok := interaction.Metadata["author"].(models.AccountProfile); ok {
+			if key := accountKey(profile); key != "" {
+				if _, exists := accounts[key]; !exists {
+					accounts[key] = profile
+				}
 			}
 		}
 	}
@@ -591,9 +635,23 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	for _, interaction := range interactions {
 		byAccount[interaction.AccountID] = append(byAccount[interaction.AccountID], interaction)
 	}
-	// Detect coordinated inauthentic behavior across the narrative's interaction set (near-duplicate
-	// copy shared by multiple distinct accounts), then fold it into each account's profile so the
-	// bot scorer can flag amplification networks.
+	// Make each source author's own post text visible to the scorer (as a non-amplifying "post"
+	// pseudo-event) so hashtag-stuffing source posters are evaluated too, not just repliers.
+	for _, source := range sources {
+		key := accountKey(source.Author)
+		if key == "" || strings.TrimSpace(source.Text) == "" {
+			continue
+		}
+		byAccount[key] = append(byAccount[key], models.InteractionEvent{
+			AccountID:       key,
+			InteractionType: "post",
+			Metadata:        map[string]any{"text": source.Text},
+		})
+	}
+	// Detect coordinated inauthentic behavior. The per-narrative pass catches copy that repeats
+	// within this cluster; the campaign-wide baseCoord catches accounts spreading the same slogan
+	// across many clusters. Both are folded into each account's profile so the bot scorer can flag
+	// amplification networks. All signal is from real post text.
 	coordination := computeCoordination(interactions)
 	botThreshold := 0.65
 	// For campaigns explicitly focused on inauthentic amplification, bias toward recall: we still
@@ -604,15 +662,20 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	}
 	classifications := []models.ActorClassification{}
 	now := time.Now().UTC()
-	for accountID, accountInteractions := range byAccount {
-		account := accounts[accountID]
+	// Classify the union of source authors and interaction authors. Source posters are the ones
+	// who actually spread the coordinated copy, so they must be scored too — not just repliers.
+	for accountID, account := range accounts {
 		if account.AccountID == "" {
 			account = models.AccountProfile{AccountID: accountID, Platform: "x", Handle: accountID}
 		}
-		if c := coordination[accountID]; c > account.CoordinationScore {
-			account.CoordinationScore = c
+		coord := coordination[accountID]
+		if bc := baseCoord[accountID]; bc > coord {
+			coord = bc
 		}
-		score, evidence := scoring.ActorBotScore(account, accountInteractions)
+		if coord > account.CoordinationScore {
+			account.CoordinationScore = coord
+		}
+		score, evidence := scoring.ActorBotScore(account, byAccount[accountID])
 		class := models.ActorClassNonBot
 		if score >= botThreshold || account.CoordinationScore >= 0.6 {
 			class = models.ActorClassBot
