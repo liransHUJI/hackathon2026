@@ -181,11 +181,12 @@ func (e *Engine) assessNarratives(ctx context.Context, campaign models.CampaignP
 	out := make(map[string]models.CommitteeVerdict, len(narratives))
 	if e.gemini != nil && e.gemini.Configured() && len(narratives) > 0 {
 		input := gemini.CommitteeInput{
-			ClientName:     campaign.ClientName,
-			ClientAliases:  campaign.ClientAliases,
-			ClientAccounts: campaign.ClientAccounts,
-			Industry:       campaign.Industry,
-			Region:         campaign.Region,
+			ClientName:       campaign.ClientName,
+			ClientAliases:    campaign.ClientAliases,
+			ClientAccounts:   campaign.ClientAccounts,
+			Industry:         campaign.Industry,
+			Region:           campaign.Region,
+			AggressiveAIBias: campaignAggressiveAIBias(campaign),
 		}
 		for _, n := range narratives {
 			nsrc := sourcesForNarrative(n, sources)
@@ -212,9 +213,12 @@ func (e *Engine) assessNarratives(ctx context.Context, campaign models.CampaignP
 		}
 	}
 	for _, n := range narratives {
-		if v, ok := out[n.NarrativeID]; ok && campaignSkewsAmplificationRatio(campaign) {
+		if v, ok := out[n.NarrativeID]; ok && (campaignSkewsAmplificationRatio(campaign) || campaignAggressiveAIBias(campaign)) {
 			biased := v
 			applyCommitteeAIBias(&biased, &n)
+			if campaignAggressiveAIBias(campaign) {
+				applyCommitteeAggressiveAIBias(&biased, &n)
+			}
 			out[n.NarrativeID] = biased
 		}
 	}
@@ -239,7 +243,7 @@ func heuristicVerdict(campaign models.CampaignProfile, n models.NarrativeCluster
 		}},
 		Source: "heuristic",
 	}
-	if campaignSkewsAmplificationRatio(campaign) {
+	if campaignSkewsAmplificationRatio(campaign) || campaignAggressiveAIBias(campaign) {
 		v.ConsensusLabel = "likely bot/AI-amplified (heuristic)"
 		v.Experts = []models.ExpertAssessment{
 			{Expert: "Disinformation Analyst", Severity: 0.72, Confidence: 0.55,
@@ -359,6 +363,56 @@ func applyCommitteeAIBias(v *models.CommitteeVerdict, n *models.NarrativeCluster
 	}
 	if v.InterestScore < 0.5+inauth/200 {
 		v.InterestScore = clampUnit(0.5 + inauth/200)
+	}
+	if v.RelevanceScore < v.InterestScore {
+		v.RelevanceScore = v.InterestScore
+	}
+}
+
+// applyCommitteeAggressiveAIBias further pushes committee outputs toward synthetic-traffic /
+// bot-network framing for war-room campaigns that prioritize early detection of artificial narratives.
+func applyCommitteeAggressiveAIBias(v *models.CommitteeVerdict, n *models.NarrativeCluster) {
+	if v == nil || n == nil {
+		return
+	}
+	inauth := n.InauthenticPercentage
+	if inauth < 55 {
+		inauth = 55 + n.BotCoordinationRisk*40 + n.AIGenerationRisk*25
+	}
+	if inauth > 98 {
+		inauth = 98
+	}
+	v.ConsensusLabel = "likely AI/bot-manufactured narrative"
+	v.ImpactSummary = fmt.Sprintf(
+		"War-room read: ~%.0f%% of visible engagement on this narrative looks bot/AI-driven — the synthetic lift pattern a 2016 rapid-response desk would flag weeks before organic pickup.",
+		inauth,
+	)
+	v.AudienceEffect = fmt.Sprintf(
+		"Low-reach amplifier tail dominates; committee treats ~%.0f%% of interacting accounts as synthetic rather than persuadable voters.",
+		inauth,
+	)
+	if strings.TrimSpace(v.RecommendedAction) == "" {
+		v.RecommendedAction = "Treat as artificial narrative — brief comms leadership, do not engage organically, and prepare counter-intelligence response."
+	}
+	for i := range v.Experts {
+		v.Experts[i].Severity = clampUnit(max(v.Experts[i].Severity, 0.62+inauth/140))
+		v.Experts[i].Confidence = clampUnit(max(v.Experts[i].Confidence, 0.62))
+		e := strings.ToLower(v.Experts[i].Expert)
+		switch {
+		case strings.Contains(e, "disinformation"):
+			v.Experts[i].Opinion = fmt.Sprintf("High-confidence synthetic-traffic read (~%.0f%% bot/AI): coordinated low-reach amplifiers repeating templated copy.", inauth)
+		case strings.Contains(e, "skeptic"):
+			v.Experts[i].Opinion = "Even the conservative read: organic majority is unlikely — verify handles but assume manufactured narrative until disproven."
+		case strings.Contains(e, "financial"):
+			v.Experts[i].Opinion = fmt.Sprintf("Model exposure using bot-adjusted reach only; headline impressions overstate authentic voter contact by ~%.0f%%.", inauth)
+		default:
+			if !strings.Contains(strings.ToLower(v.Experts[i].Opinion), "bot") && !strings.Contains(strings.ToLower(v.Experts[i].Opinion), "ai") {
+				v.Experts[i].Opinion = "Synthetic engagement pattern — " + v.Experts[i].Opinion
+			}
+		}
+	}
+	if v.InterestScore < 0.65+inauth/180 {
+		v.InterestScore = clampUnit(0.65 + inauth/180)
 	}
 	if v.RelevanceScore < v.InterestScore {
 		v.RelevanceScore = v.InterestScore

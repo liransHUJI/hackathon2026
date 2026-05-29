@@ -75,6 +75,7 @@ func (e *Engine) CreateCampaign(ctx context.Context, req models.CampaignRequest)
 		HostileSources:    req.HostileSources,
 		Languages:         req.Languages,
 		CrawlBudget:       req.CrawlBudget,
+		AnalysisSettings:  req.AnalysisSettings,
 		Status:            models.EngineStatusActive,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -138,6 +139,7 @@ func (e *Engine) CreateCampaignObject(campaignID string, req models.CampaignRequ
 		HostileSources:    req.HostileSources,
 		Languages:         req.Languages,
 		CrawlBudget:       req.CrawlBudget,
+		AnalysisSettings:  req.AnalysisSettings,
 		Status:            models.EngineStatusActive,
 		CreatedAt:         createdAt,
 		UpdatedAt:         now,
@@ -224,10 +226,10 @@ func (e *Engine) processSources(ctx context.Context, campaign *models.CampaignPr
 			interactionTarget = e.cfg.InteractionsPerNarrative
 		}
 		narrativeSources := sourcesForNarrative(narratives[idx], sources)
-		interactions, interactionFailures := e.harvestInteractions(ctx, narrativeSources, interactionTarget, useProvider)
+		interactions, interactionFailures := e.harvestInteractions(ctx, *campaign, narrativeSources, interactionTarget, useProvider)
 		failures = append(failures, interactionFailures...)
 		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions, baseCoord)
-		annotateInteractionClasses(interactions, classifications, campaignSkewsAmplificationRatio(*campaign))
+		annotateInteractionClasses(interactions, classifications, interactionRecallFloor(*campaign))
 		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
 		// The narrative row must exist before interactions/classifications reference it via FK.
 		// Save failures (e.g. a cancelled context near the deadline) are non-fatal: we skip this
@@ -554,13 +556,13 @@ func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []m
 	return narratives
 }
 
-func (e *Engine) harvestInteractions(ctx context.Context, sources []models.SourceItem, target int, useProvider bool) ([]models.InteractionEvent, []models.ProviderFailure) {
+func (e *Engine) harvestInteractions(ctx context.Context, campaign models.CampaignProfile, sources []models.SourceItem, target int, useProvider bool) ([]models.InteractionEvent, []models.ProviderFailure) {
 	interactions := []models.InteractionEvent{}
 	failures := []models.ProviderFailure{}
 	if len(sources) == 0 {
 		return interactions, failures
 	}
-	origin := chooseOrigin(sources)
+	origin := chooseOrigin(sources, campaignPreferLowReachInteractions(campaign))
 
 	// 1. Sibling X posts in the cluster are themselves interactions (reply/quote/repost/subtweet)
 	//    relative to the origin post. This is free and needs no extra provider calls.
@@ -613,21 +615,49 @@ func (e *Engine) harvestInteractions(ctx context.Context, sources []models.Sourc
 	}
 
 	interactions = dedupeInteractions(interactions)
-	if len(interactions) > target && target > 0 {
-		interactions = interactions[:target]
-	}
+	interactions = trimInteractions(interactions, target, campaignPreferLowReachInteractions(campaign))
 	return interactions, failures
 }
 
-// chooseOrigin selects the most likely origin post of a narrative: the most-followed X account,
-// falling back to the earliest source, then the first.
-func chooseOrigin(sources []models.SourceItem) models.SourceItem {
+func trimInteractions(interactions []models.InteractionEvent, target int, preferLowReach bool) []models.InteractionEvent {
+	if target <= 0 || len(interactions) <= target {
+		return interactions
+	}
+	if preferLowReach {
+		sort.Slice(interactions, func(i, j int) bool {
+			return interactionAuthorReach(interactions[i]) < interactionAuthorReach(interactions[j])
+		})
+	}
+	return interactions[:target]
+}
+
+func interactionAuthorReach(it models.InteractionEvent) int64 {
+	if it.Metadata != nil {
+		if profile, ok := it.Metadata["author"].(models.AccountProfile); ok {
+			return profile.FollowersCount
+		}
+	}
+	return int64(it.ImportanceScore * 1_000_000)
+}
+
+// chooseOrigin selects the origin post for interaction harvesting. By default it picks the
+// most-followed X account in the cluster; low-reach mode picks the least-followed post so the
+// conversation tail (typical bot amplification layer) is analyzed first.
+func chooseOrigin(sources []models.SourceItem, preferLowReach bool) models.SourceItem {
 	var best *models.SourceItem
 	for idx := range sources {
 		if sources[idx].SourceType != models.SourceTypeXPost {
 			continue
 		}
-		if best == nil || sources[idx].Author.FollowersCount > best.Author.FollowersCount {
+		if best == nil {
+			best = &sources[idx]
+			continue
+		}
+		if preferLowReach {
+			if sources[idx].Author.FollowersCount < best.Author.FollowersCount {
+				best = &sources[idx]
+			}
+		} else if sources[idx].Author.FollowersCount > best.Author.FollowersCount {
 			best = &sources[idx]
 		}
 	}
@@ -656,6 +686,18 @@ func truncateText(value string, limit int) string {
 		return string(runes)
 	}
 	return string(runes[:limit])
+}
+
+func campaignIncludesMegaAccounts(campaign models.CampaignProfile) bool {
+	return campaign.AnalysisSettings.IncludeMegaAccounts
+}
+
+func campaignPreferLowReachInteractions(campaign models.CampaignProfile) bool {
+	return campaign.AnalysisSettings.PreferLowReachInteractions
+}
+
+func campaignAggressiveAIBias(campaign models.CampaignProfile) bool {
+	return campaign.AnalysisSettings.AggressiveAIBiasCommittee
 }
 
 // campaignSkewsAmplificationRatio is true for campaigns where the dashboard should emphasize
@@ -749,7 +791,12 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	// classify from real account behavior, but use a lower cut-off so suspicious actors are not
 	// hidden behind an overly conservative threshold.
 	skew := campaignSkewsAmplificationRatio(campaign)
-	if russianDemo {
+	aggressive := campaignAggressiveAIBias(campaign)
+	if aggressive {
+		botThreshold = 0.10
+		coordBotThreshold = 0.12
+		scoreOpts.RussianInterferenceDemo = true
+	} else if russianDemo {
 		botThreshold = 0.2
 		coordBotThreshold = 0.25
 		scoreOpts.RussianInterferenceDemo = true
@@ -776,7 +823,7 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 		class := models.ActorClassNonBot
 		if score >= botThreshold || account.CoordinationScore >= coordBotThreshold {
 			class = models.ActorClassBot
-		} else if skew && score >= 0.16 {
+		} else if (skew || aggressive) && score >= borderlineBotScore(aggressive) {
 			// High-recall demo: borderline amplifiers still count as bot/AI-driven for the product story.
 			class = models.ActorClassBot
 			evidence = append(evidence, "borderline bot/AI amplification signals (high-recall demo classification)")
@@ -797,8 +844,32 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 }
 
 // annotateInteractionClasses stamps each interaction with the author's bot/AI class so the UI can
+func aiRiskBoost(campaign models.CampaignProfile) float64 {
+	if campaignAggressiveAIBias(campaign) {
+		return 0.35
+	}
+	return 0.2
+}
+
+func timelineBotScoreFloor(campaign models.CampaignProfile) float64 {
+	if campaignAggressiveAIBias(campaign) {
+		return 0.06
+	}
+	return 0.18
+}
+
+func interactionRecallFloor(campaign models.CampaignProfile) float64 {
+	if campaignAggressiveAIBias(campaign) {
+		return 0.06
+	}
+	if campaignSkewsAmplificationRatio(campaign) {
+		return 0.16
+	}
+	return 1.0
+}
+
 // show per-interaction labels. Under demo recall, borderline scores still display as bot/AI-driven.
-func annotateInteractionClasses(interactions []models.InteractionEvent, classifications []models.ActorClassification, demoRecall bool) {
+func annotateInteractionClasses(interactions []models.InteractionEvent, classifications []models.ActorClassification, recallFloor float64) {
 	byAccount := make(map[string]models.ActorClassification, len(classifications))
 	for _, c := range classifications {
 		byAccount[c.AccountID] = c
@@ -811,22 +882,29 @@ func annotateInteractionClasses(interactions []models.InteractionEvent, classifi
 		cls := c
 		interactions[i].Classification = &cls
 		interactions[i].ActorClass = c.Class
-		if demoRecall && c.Class != models.ActorClassBot && c.BotScore >= 0.16 {
+		if recallFloor < 1 && c.Class != models.ActorClassBot && c.BotScore >= recallFloor {
 			interactions[i].ActorClass = models.ActorClassBot
 		}
 	}
 }
 
+func borderlineBotScore(aggressive bool) float64 {
+	if aggressive {
+		return 0.06
+	}
+	return 0.16
+}
+
 func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *models.NarrativeCluster, sources []models.SourceItem, interactions []models.InteractionEvent, classifications []models.ActorClassification) {
 	metricsSources := sources
 	metricsClassifications := classifications
-	if campaignSkewsAmplificationRatio(*campaign) {
+	if campaignSkewsAmplificationRatio(*campaign) && !campaignIncludesMegaAccounts(*campaign) {
 		accounts := accountsFromNarrative(sources, interactions)
 		metricsClassifications = scoring.FilterClassificationsForAmplificationPool(classifications, accounts)
 		metricsSources = scoring.FilterSourcesForAmplificationAnalysis(sources)
 	}
 	var auth, inauth, unknown float64
-	if campaignRussianInterferenceDemo(*campaign) {
+	if campaignRussianInterferenceDemo(*campaign) || campaignAggressiveAIBias(*campaign) {
 		auth, inauth, unknown = scoring.AuthenticityPercentagesHighRecall(metricsClassifications)
 	} else {
 		auth, inauth, unknown = scoring.AuthenticityPercentages(metricsClassifications)
@@ -843,8 +921,8 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 	narrative.BotCoordinationRisk = inauth / 100
 	narrative.ForeignInfluenceRisk = foreignInfluenceRisk(campaign, metricsSources)
 	narrative.AIGenerationRisk = aiGenerationRisk(metricsSources)
-	if campaignSkewsAmplificationRatio(*campaign) {
-		narrative.AIGenerationRisk = clampUnit(narrative.AIGenerationRisk + narrative.InauthenticPercentage/120 + narrative.BotCoordinationRisk*0.35 + 0.2)
+	if campaignSkewsAmplificationRatio(*campaign) || campaignAggressiveAIBias(*campaign) {
+		narrative.AIGenerationRisk = clampUnit(narrative.AIGenerationRisk + narrative.InauthenticPercentage/120 + narrative.BotCoordinationRisk*0.35 + aiRiskBoost(*campaign))
 	}
 	narrative.MisinformationRisk = misinformationRisk(narrative.BotCoordinationRisk, narrative.AIGenerationRisk, narrative.ForeignInfluenceRisk)
 	narrative.OrganicProminenceScore = 1 - narrative.BotCoordinationRisk
@@ -865,12 +943,12 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 	narrative.CapitalLossEstimate = scoring.CapitalLossEstimate(*narrative)
 	narrative.DecisionExplanation = decisionExplanation(*narrative)
 	metricsInteractions := interactions
-	if campaignSkewsAmplificationRatio(*campaign) {
+	if campaignSkewsAmplificationRatio(*campaign) && !campaignIncludesMegaAccounts(*campaign) {
 		metricsInteractions = scoring.FilterInteractionsForAmplificationAnalysis(interactions)
 	}
 	timelineBotFloor := 1.0
-	if campaignSkewsAmplificationRatio(*campaign) {
-		timelineBotFloor = 0.18
+	if campaignSkewsAmplificationRatio(*campaign) || campaignAggressiveAIBias(*campaign) {
+		timelineBotFloor = timelineBotScoreFloor(*campaign)
 	}
 	narrative.SpreadTimeline = spreadTimeline(metricsSources, metricsInteractions, metricsClassifications, timelineBotFloor)
 	narrative.InteractionBreakdown = interactionBreakdown(metricsInteractions)
@@ -881,8 +959,11 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 		if v.Source != "gemini" {
 			enrichHeuristicVerdict(narrative)
 		}
-		if campaignSkewsAmplificationRatio(*campaign) {
+		if campaignSkewsAmplificationRatio(*campaign) || campaignAggressiveAIBias(*campaign) {
 			applyCommitteeAIBias(narrative.CommitteeVerdict, narrative)
+			if campaignAggressiveAIBias(*campaign) {
+				applyCommitteeAggressiveAIBias(narrative.CommitteeVerdict, narrative)
+			}
 		}
 		if strings.TrimSpace(v.ImpactSummary) != "" {
 			narrative.WhyItMatters = v.ImpactSummary

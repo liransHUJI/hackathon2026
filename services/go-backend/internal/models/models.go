@@ -417,40 +417,55 @@ const (
 	TrendFalling TrendDirection = "falling"
 )
 
+// AnalysisSettings tunes how harvested interactions and expert committee outputs are interpreted.
+type AnalysisSettings struct {
+	// IncludeMegaAccounts keeps major verified/publisher accounts in authenticity ratios and
+	// top-source views instead of filtering them out as obvious organic noise.
+	IncludeMegaAccounts bool `json:"include_mega_accounts,omitempty"`
+	// PreferLowReachInteractions sorts interaction harvesting toward the least-followed accounts
+	// replying/amplifying each tweet — the typical bot-coordination long tail.
+	PreferLowReachInteractions bool `json:"prefer_low_reach_interactions,omitempty"`
+	// AggressiveAIBiasCommittee pushes the expert committee and actor classifier toward labeling
+	// engagement as bot/AI-driven when early synthetic-traffic signals are present.
+	AggressiveAIBiasCommittee bool `json:"aggressive_ai_bias_committee,omitempty"`
+}
+
 type CampaignProfile struct {
-	CampaignID        string          `json:"campaign_id"`
-	ClientName        string          `json:"client_name"`
-	ClientAliases     []string        `json:"client_aliases"`
-	Industry          string          `json:"industry"`
-	Region            string          `json:"region"`
-	MonitoredTopics   []string        `json:"monitored_topics"`
-	Opponents         []string        `json:"opponents,omitempty"`
-	InterestGroups    []InterestGroup `json:"interest_groups,omitempty"`
-	ImportantAccounts []string        `json:"important_accounts,omitempty"`
-	ClientAccounts    []string        `json:"client_accounts,omitempty"`
-	TrustedSources    []string        `json:"trusted_sources,omitempty"`
-	HostileSources    []string        `json:"known_hostile_sources,omitempty"`
-	Languages         []string        `json:"languages"`
-	CrawlBudget       CrawlBudget     `json:"crawl_budget"`
-	Status            EngineStatus    `json:"status"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
+	CampaignID        string           `json:"campaign_id"`
+	ClientName        string           `json:"client_name"`
+	ClientAliases     []string         `json:"client_aliases"`
+	Industry          string           `json:"industry"`
+	Region            string           `json:"region"`
+	MonitoredTopics   []string         `json:"monitored_topics"`
+	Opponents         []string         `json:"opponents,omitempty"`
+	InterestGroups    []InterestGroup  `json:"interest_groups,omitempty"`
+	ImportantAccounts []string         `json:"important_accounts,omitempty"`
+	ClientAccounts    []string         `json:"client_accounts,omitempty"`
+	TrustedSources    []string         `json:"trusted_sources,omitempty"`
+	HostileSources    []string         `json:"known_hostile_sources,omitempty"`
+	Languages         []string         `json:"languages"`
+	CrawlBudget       CrawlBudget      `json:"crawl_budget"`
+	AnalysisSettings  AnalysisSettings `json:"analysis_settings,omitempty"`
+	Status            EngineStatus     `json:"status"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
 }
 
 type CampaignRequest struct {
-	ClientName        string          `json:"client_name"`
-	ClientAliases     []string        `json:"client_aliases"`
-	Industry          string          `json:"industry"`
-	Region            string          `json:"region"`
-	MonitoredTopics   []string        `json:"monitored_topics"`
-	Opponents         []string        `json:"opponents,omitempty"`
-	InterestGroups    []InterestGroup `json:"interest_groups,omitempty"`
-	ImportantAccounts []string        `json:"important_accounts,omitempty"`
-	ClientAccounts    []string        `json:"client_accounts,omitempty"`
-	TrustedSources    []string        `json:"trusted_sources,omitempty"`
-	HostileSources    []string        `json:"known_hostile_sources,omitempty"`
-	Languages         []string        `json:"languages"`
-	CrawlBudget       CrawlBudget     `json:"crawl_budget"`
+	ClientName        string           `json:"client_name"`
+	ClientAliases     []string         `json:"client_aliases"`
+	Industry          string           `json:"industry"`
+	Region            string           `json:"region"`
+	MonitoredTopics   []string         `json:"monitored_topics"`
+	Opponents         []string         `json:"opponents,omitempty"`
+	InterestGroups    []InterestGroup  `json:"interest_groups,omitempty"`
+	ImportantAccounts []string         `json:"important_accounts,omitempty"`
+	ClientAccounts    []string         `json:"client_accounts,omitempty"`
+	TrustedSources    []string         `json:"trusted_sources,omitempty"`
+	HostileSources    []string         `json:"known_hostile_sources,omitempty"`
+	Languages         []string         `json:"languages"`
+	CrawlBudget       CrawlBudget      `json:"crawl_budget"`
+	AnalysisSettings  AnalysisSettings `json:"analysis_settings,omitempty"`
 }
 
 type CrawlBudget struct {

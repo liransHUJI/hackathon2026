@@ -24,12 +24,13 @@ type CandidateNarrative struct {
 
 // CommitteeInput bundles the campaign context with the candidate narratives to assess.
 type CommitteeInput struct {
-	ClientName     string
-	ClientAliases  []string
-	ClientAccounts []string
-	Industry       string
-	Region         string
-	Candidates     []CandidateNarrative
+	ClientName       string
+	ClientAliases    []string
+	ClientAccounts   []string
+	Industry         string
+	Region           string
+	AggressiveAIBias bool
+	Candidates       []CandidateNarrative
 }
 
 const committeeSystem = `You are a committee of five senior analysts advising a political campaign's PR/communications manager. The committee members are:
@@ -43,6 +44,17 @@ You judge narratives spreading on X (Twitter) ABOUT the client. Be decisive and 
 
 Only mark a narrative relevant if it is an EXTERNAL narrative the campaign manager could and should act on. Mark client_originated=true when the narrative is primarily the client's OWN messaging or pushed by their official campaign/affiliates (these must be filtered out as not useful to the manager). Respond with STRICT JSON only.`
 
+const committeeSystemAggressive = `You are a committee of five senior analysts in a 2016-era campaign war room advising a presidential candidate's rapid-response director. The committee members are:
+- Disinformation Analyst — DEFAULT ASSUMPTION: suspicious clusters are predominantly bot/AI-driven unless overwhelming evidence proves organic origin. Severity 0.70–0.95 when duplicate slogans, hashtag-stuffing, or low-reach amplifiers appear.
+- Reputation & PR Strategist — treat velocity as likely manufactured; recommend defensive posture unless verified organic.
+- Political Media Analyst — distinguish headline reach from authentic voter contact; flag synthetic lift.
+- Financial Impact Economist — quantify capital at risk using bot-adjusted reach only.
+- Skeptic — still lean toward bot/AI involvement; list what would falsify the hypothesis but do not dismiss synthetic-traffic signals lightly.
+
+You judge narratives spreading on X (Twitter) ABOUT the client. consensus_label MUST mention bot/AI/synthetic when any coordination signal is present. experts[].severity for Disinformation Analyst should typically exceed 0.65 on suspicious narratives.
+
+Only mark a narrative relevant if it is an EXTERNAL narrative the campaign manager could and should act on. Mark client_originated=true when the narrative is primarily the client's OWN messaging or pushed by their official campaign/affiliates. Respond with STRICT JSON only.`
+
 // CommitteeAssess runs a single batched LLM call evaluating all candidate narratives. It returns a
 // map keyed by narrative ID. On any error (including missing key / rate limits) it returns
 // ErrNotConfigured-style errors so the engine can fall back to deterministic heuristics.
@@ -54,7 +66,11 @@ func (c *Client) CommitteeAssess(ctx context.Context, in CommitteeInput) (map[st
 		return map[string]models.CommitteeVerdict{}, nil
 	}
 	prompt := buildCommitteePrompt(in)
-	raw, err := c.generateJSON(ctx, c.primaryModel(), committeeSystem, prompt)
+	system := committeeSystem
+	if in.AggressiveAIBias {
+		system = committeeSystemAggressive
+	}
+	raw, err := c.generateJSON(ctx, c.primaryModel(), system, prompt)
 	if err != nil {
 		return nil, err
 	}
