@@ -289,6 +289,18 @@ function App() {
     }
   }
 
+  async function resumeCampaign() {
+    if (!currentCampaignId) return;
+    try {
+      await api(`/v1/campaigns/${currentCampaignId}/crawl/start`, { method: "POST" });
+      showToast("Monitoring resumed — scheduled gathering is active again.");
+      await refreshDashboard();
+      await loadCampaigns();
+    } catch (error) {
+      showToast(`Could not resume campaign: ${error.message}`, true);
+    }
+  }
+
   async function submitCampaign(event) {
     event.preventDefault();
     setFormError("");
@@ -587,9 +599,19 @@ function App() {
               <button className="btn btn-secondary" onClick={runCrawl} disabled={effectiveStatus === "running"}>
                 {effectiveStatus === "running" ? "Gathering…" : "Gather now"}
               </button>
-              <button className="btn btn-danger" onClick={stopCampaign} disabled={effectiveStatus === "stopped"}>
-                Pause
-              </button>
+              {effectiveStatus === "stopped" ? (
+                <button
+                  className="btn btn-primary"
+                  onClick={resumeCampaign}
+                  title="Resume background monitoring (scheduler will gather on interval)"
+                >
+                  Unpause
+                </button>
+              ) : (
+                <button className="btn btn-danger" onClick={stopCampaign} disabled={effectiveStatus === "running"}>
+                  Pause
+                </button>
+              )}
               <button className="btn btn-ghost" onClick={() => refreshDashboard()}>
                 Refresh
               </button>
