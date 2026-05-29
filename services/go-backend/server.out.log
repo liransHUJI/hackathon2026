@@ -1,0 +1,2 @@
+{"time":"2026-05-29T04:36:52.5769509+03:00","level":"INFO","msg":"provenance workers started","count":9}
+{"time":"2026-05-29T04:36:52.600924+03:00","level":"INFO","msg":"http server listening","addr":":8080"}

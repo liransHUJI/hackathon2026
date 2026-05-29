@@ -205,7 +205,7 @@ func (s *Server) runOnce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 		defer cancel()
 		if _, err := s.engine.RunDiscovery(ctx, campaignID); err != nil {
 			s.logger.Error("background discovery run failed", "campaign_id", campaignID, "error", err)

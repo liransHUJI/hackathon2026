@@ -219,26 +219,62 @@ func sharesTopic(a, b models.SourceItem) bool {
 func ActorBotScore(account models.AccountProfile, interactions []models.InteractionEvent) (float64, []string) {
 	score := account.BotLikelihood
 	evidence := []string{}
+
+	// Coordinated inauthentic behavior is the strongest signal: accounts pushing near-identical
+	// copy is the classic fingerprint of an amplification network.
+	if account.CoordinationScore >= 0.6 {
+		score += 0.45
+		evidence = append(evidence, "coordinated near-duplicate messaging with other accounts")
+	} else if account.CoordinationScore >= 0.3 {
+		score += 0.22
+		evidence = append(evidence, "partial coordination signal shared with other accounts")
+	}
+
+	if digitSuffix(strings.TrimPrefix(account.Handle, "@")) {
+		score += 0.2
+		evidence = append(evidence, "auto-generated style handle (long numeric suffix)")
+	}
+
+	amplifications := 0
+	for _, it := range interactions {
+		if it.InteractionType == "repost" || it.InteractionType == "quote" {
+			amplifications++
+		}
+	}
+	if account.FollowersCount < 200 && amplifications > 0 {
+		score += 0.15
+		evidence = append(evidence, "low-reach account amplifying via reposts/quotes")
+	}
 	if account.FollowersCount < 50 && account.FollowingCount > 500 {
-		score += 0.25
+		score += 0.15
 		evidence = append(evidence, "low-follower/high-following ratio")
 	}
-	if len(interactions) > 25 {
-		score += 0.20
-		evidence = append(evidence, "high interaction volume in one narrative")
-	}
-	if account.Bio == "" {
-		score += 0.10
+	if strings.TrimSpace(account.Bio) == "" {
+		score += 0.1
 		evidence = append(evidence, "missing profile bio")
 	}
-	if account.CoordinationScore > 0.5 {
-		score += 0.20
-		evidence = append(evidence, "coordination score is elevated")
+	if len(interactions) > 15 {
+		score += 0.15
+		evidence = append(evidence, "high interaction volume in one narrative")
 	}
 	if len(evidence) == 0 {
 		evidence = append(evidence, "no strong bot indicators found")
 	}
 	return pipeline.Clamp01(score), evidence
+}
+
+// digitSuffix reports whether a handle ends in a long run of digits, a common trait of
+// auto-generated / throwaway amplification accounts (e.g. "MAGAWarrior48213").
+func digitSuffix(handle string) bool {
+	n := 0
+	for i := len(handle) - 1; i >= 0; i-- {
+		if handle[i] >= '0' && handle[i] <= '9' {
+			n++
+			continue
+		}
+		break
+	}
+	return n >= 4
 }
 
 func AuthenticityPercentages(classifications []models.ActorClassification) (authentic, inauthentic, unknown float64) {

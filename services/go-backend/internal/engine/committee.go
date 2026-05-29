@@ -6,10 +6,82 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hnweb/provenance/internal/llm/gemini"
 	"github.com/hnweb/provenance/internal/models"
 )
+
+// computeCoordination scores accounts for coordinated inauthentic behavior within a single
+// narrative. The core signal is near-duplicate messaging: when 3+ distinct accounts post the same
+// normalized text, that text is treated as a coordinated template and every account using it is
+// flagged. A lighter signal is applied when only 2 accounts share a template.
+func computeCoordination(interactions []models.InteractionEvent) map[string]float64 {
+	textAccounts := map[string]map[string]bool{}
+	accountTexts := map[string][]string{}
+	for _, it := range interactions {
+		text := ""
+		if it.Metadata != nil {
+			if s, ok := it.Metadata["text"].(string); ok {
+				text = s
+			}
+		}
+		norm := normalizeForCoord(text)
+		if norm == "" {
+			continue
+		}
+		if textAccounts[norm] == nil {
+			textAccounts[norm] = map[string]bool{}
+		}
+		textAccounts[norm][it.AccountID] = true
+		accountTexts[it.AccountID] = append(accountTexts[it.AccountID], norm)
+	}
+	scores := map[string]float64{}
+	for acc, norms := range accountTexts {
+		best := 0.0
+		for _, n := range norms {
+			distinct := len(textAccounts[n])
+			switch {
+			case distinct >= 3:
+				if best < 0.85 {
+					best = 0.85
+				}
+			case distinct == 2:
+				if best < 0.45 {
+					best = 0.45
+				}
+			}
+		}
+		if best > 0 {
+			scores[acc] = best
+		}
+	}
+	return scores
+}
+
+// normalizeForCoord reduces a post to a comparable template: lowercased, with URLs and @mentions
+// removed (these vary per post) and punctuation/emoji stripped, so copy-paste amplification with
+// minor cosmetic differences still collides.
+func normalizeForCoord(s string) string {
+	fields := strings.Fields(strings.ToLower(s))
+	keep := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if strings.HasPrefix(f, "http") || strings.HasPrefix(f, "@") {
+			continue
+		}
+		f = strings.TrimFunc(f, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '#'
+		})
+		if f != "" {
+			keep = append(keep, f)
+		}
+	}
+	out := strings.Join(keep, " ")
+	if len(out) > 220 {
+		out = out[:220]
+	}
+	return out
+}
 
 // clientAccountFilter recognizes posts authored by the client or their official affiliates so the
 // engine can exclude the client's own voice from narrative discovery.

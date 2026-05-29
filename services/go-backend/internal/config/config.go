@@ -20,6 +20,7 @@ type Config struct {
 	BrightDataUnlockerZone         string
 	BrightDataSERPZone             string
 	BrightDataXDatasetID           string
+	BrightDataXProfilesDatasetID   string
 	BrightDataSearchDatasetID      string
 	BrightDataBudgetUSD            float64
 	BrightDataXRequestsPerMinute   int
@@ -54,6 +55,7 @@ func Load() Config {
 		BrightDataUnlockerZone:         os.Getenv("BRIGHTDATA_UNLOCKER_ZONE"),
 		BrightDataSERPZone:             os.Getenv("BRIGHTDATA_SERP_ZONE"),
 		BrightDataXDatasetID:           os.Getenv("BRIGHTDATA_X_DATASET_ID"),
+		BrightDataXProfilesDatasetID:   os.Getenv("BRIGHTDATA_X_PROFILES_DATASET_ID"),
 		BrightDataSearchDatasetID:      os.Getenv("BRIGHTDATA_SEARCH_DATASET_ID"),
 		BrightDataBudgetUSD:            envFloat("BRIGHTDATA_BUDGET_USD", 0),
 		BrightDataXRequestsPerMinute:   envInt("BRIGHTDATA_X_REQUESTS_PER_MINUTE", 30),

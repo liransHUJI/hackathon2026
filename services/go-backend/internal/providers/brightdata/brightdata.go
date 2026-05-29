@@ -22,23 +22,36 @@ import (
 )
 
 type Provider struct {
-	id           string
-	apiKey       string
-	unlockerZone string
-	serpZone     string
-	datasetID    string
-	budgetUSD    float64
-	spentUSD     float64
-	client       *http.Client
-	mu           sync.Mutex
+	id                string
+	apiKey            string
+	unlockerZone      string
+	serpZone          string
+	postsDatasetID    string
+	profilesDatasetID string
+	budgetUSD         float64
+	spentUSD          float64
+	client            *http.Client
+	mu                sync.Mutex
 }
 
 func NewX(apiKey string, budgetUSD float64) *Provider {
-	return NewXWithDataset(apiKey, "", "", budgetUSD)
+	return NewXWithDatasets(apiKey, "", "", "", budgetUSD)
 }
 
 func NewXWithDataset(apiKey, datasetID, serpZone string, budgetUSD float64) *Provider {
-	return &Provider{id: "brightdata_x", apiKey: apiKey, datasetID: datasetID, serpZone: serpZone, budgetUSD: budgetUSD, client: &http.Client{Timeout: 180 * time.Second}}
+	return NewXWithDatasets(apiKey, datasetID, "", serpZone, budgetUSD)
+}
+
+func NewXWithDatasets(apiKey, postsDatasetID, profilesDatasetID, serpZone string, budgetUSD float64) *Provider {
+	return &Provider{
+		id:                "brightdata_x",
+		apiKey:            apiKey,
+		postsDatasetID:    postsDatasetID,
+		profilesDatasetID: profilesDatasetID,
+		serpZone:          serpZone,
+		budgetUSD:         budgetUSD,
+		client:            &http.Client{Timeout: 180 * time.Second},
+	}
 }
 
 func NewWeb(apiKey string, budgetUSD float64) *Provider {
@@ -154,8 +167,8 @@ func (p *Provider) collectX(ctx context.Context, target models.CollectionTarget)
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > 200 {
+		limit = 200
 	}
 	urls, err := p.discoverTweetURLs(ctx, target.Query, limit)
 	if err != nil {
@@ -169,7 +182,7 @@ func (p *Provider) discoverTweetURLs(ctx context.Context, query string, limit in
 	if strings.TrimSpace(p.serpZone) == "" {
 		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_SERP_ZONE to discover tweets by keyword", providers.ErrUnavailable, p.id)
 	}
-	fetch := limit * 3
+	fetch := limit * 4
 	if fetch < 10 {
 		fetch = 10
 	}
@@ -201,11 +214,39 @@ func (p *Provider) discoverTweetURLs(ctx context.Context, query string, limit in
 }
 
 func (p *Provider) FetchAccount(ctx context.Context, accountRef string) (*models.AccountProfile, error) {
-	_ = ctx
-	if strings.TrimSpace(accountRef) == "" {
+	accountRef = strings.TrimSpace(accountRef)
+	if accountRef == "" {
 		return nil, fmt.Errorf("%w: empty account ref", providers.ErrUnavailable)
 	}
-	return nil, fmt.Errorf("%w: %s account enrichment requires a configured social dataset endpoint", providers.ErrUnavailable, p.id)
+	if p.profilesDatasetID == "" {
+		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_X_PROFILES_DATASET_ID for account enrichment", providers.ErrUnavailable, p.id)
+	}
+	handle := strings.TrimPrefix(accountRef, "@")
+	input := map[string]any{
+		"url":      "https://x.com/" + handle,
+		"username": handle,
+		"handle":   handle,
+	}
+	rows, err := p.triggerDatasetRows(ctx, p.profilesDatasetID, []map[string]any{input}, 0.005)
+	if err != nil {
+		return nil, err
+	}
+	profiles := mapProfiles(rows)
+	if profile, ok := profiles[strings.ToLower(handle)]; ok {
+		if profile.AccountID == "" {
+			profile.AccountID = "x:" + strings.ToLower(handle)
+		}
+		profile.Platform = "x"
+		if profile.Handle == "" {
+			profile.Handle = handle
+		}
+		if profile.ProfileURL == nil && handle != "" {
+			profileURL := "https://x.com/" + handle
+			profile.ProfileURL = &profileURL
+		}
+		return &profile, nil
+	}
+	return nil, fmt.Errorf("%w: no profile returned for %q", providers.ErrUnavailable, accountRef)
 }
 
 func (p *Provider) FetchInteractions(ctx context.Context, source models.SourceItem, limit int) ([]models.InteractionEvent, error) {
@@ -219,8 +260,8 @@ func (p *Provider) FetchInteractions(ctx context.Context, source models.SourceIt
 	if limit <= 0 {
 		limit = 20
 	}
-	if limit > 50 {
-		limit = 50
+	if limit > 150 {
+		limit = 150
 	}
 	target := models.CollectionTarget{
 		CampaignID: source.CampaignID,
@@ -303,20 +344,36 @@ func derefStr(value *string) string {
 // collectByURLs scrapes a batch of X/Twitter status URLs through the by-URL dataset and maps
 // the returned rows into source items with full author and engagement metadata.
 func (p *Provider) collectByURLs(ctx context.Context, urls []string, target models.CollectionTarget) ([]models.SourceItem, error) {
-	if p.datasetID == "" {
+	if p.postsDatasetID == "" {
 		return nil, fmt.Errorf("%w: %s requires BRIGHTDATA_X_DATASET_ID", providers.ErrUnavailable, p.id)
 	}
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("%w: %s requires at least one tweet URL", providers.ErrUnavailable, p.id)
 	}
-	if err := p.ensureAvailable(0.02); err != nil {
-		return nil, err
-	}
-	triggerURL := "https://api.brightdata.com/datasets/v3/trigger?dataset_id=" + url.QueryEscape(p.datasetID) + "&format=json"
 	inputs := make([]map[string]any, 0, len(urls))
 	for _, u := range urls {
 		inputs = append(inputs, map[string]any{"url": u})
 	}
+	rows, err := p.triggerDatasetRows(ctx, p.postsDatasetID, inputs, 0.02)
+	if err != nil {
+		return nil, err
+	}
+	items := p.mapDatasetRows(rows, target)
+	p.enrichAuthorsWithProfiles(ctx, items)
+	return items, nil
+}
+
+func (p *Provider) triggerDatasetRows(ctx context.Context, datasetID string, inputs []map[string]any, estimatedCost float64) ([]map[string]any, error) {
+	if datasetID == "" {
+		return nil, fmt.Errorf("%w: missing Bright Data dataset id", providers.ErrUnavailable)
+	}
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("%w: dataset trigger requires at least one input", providers.ErrUnavailable)
+	}
+	if err := p.ensureAvailable(estimatedCost); err != nil {
+		return nil, err
+	}
+	triggerURL := "https://api.brightdata.com/datasets/v3/trigger?dataset_id=" + url.QueryEscape(datasetID) + "&format=json"
 	body, err := json.Marshal(inputs)
 	if err != nil {
 		return nil, err
@@ -350,10 +407,10 @@ func (p *Provider) collectByURLs(ctx context.Context, urls []string, target mode
 	if snapshotID == "" {
 		return nil, fmt.Errorf("%w: bright data trigger did not return snapshot_id", providers.ErrUnavailable)
 	}
-	return p.pollDataset(ctx, snapshotID, target)
+	return p.pollDatasetRows(ctx, snapshotID)
 }
 
-func (p *Provider) pollDataset(ctx context.Context, snapshotID string, target models.CollectionTarget) ([]models.SourceItem, error) {
+func (p *Provider) pollDatasetRows(ctx context.Context, snapshotID string) ([]map[string]any, error) {
 	statusURL := "https://api.brightdata.com/datasets/v3/progress/" + url.PathEscape(snapshotID)
 	var lastStatus string
 	for attempt := range 40 {
@@ -378,7 +435,7 @@ func (p *Provider) pollDataset(ctx context.Context, snapshotID string, target mo
 				lastStatus = progress.Status
 				switch progress.Status {
 				case "ready":
-					return p.downloadSnapshot(ctx, snapshotID, target)
+					return p.downloadSnapshotRows(ctx, snapshotID)
 				case "failed":
 					return nil, fmt.Errorf("%w: bright data dataset snapshot %s failed", providers.ErrUnavailable, snapshotID)
 				}
@@ -396,7 +453,7 @@ func (p *Provider) pollDataset(ctx context.Context, snapshotID string, target mo
 	return nil, fmt.Errorf("%w: bright data dataset snapshot %s was not ready: %s", providers.ErrUnavailable, snapshotID, truncate(lastStatus, 300))
 }
 
-func (p *Provider) downloadSnapshot(ctx context.Context, snapshotID string, target models.CollectionTarget) ([]models.SourceItem, error) {
+func (p *Provider) downloadSnapshotRows(ctx context.Context, snapshotID string) ([]map[string]any, error) {
 	snapshotURL := "https://api.brightdata.com/datasets/v3/snapshot/" + url.PathEscape(snapshotID) + "?format=json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, snapshotURL, nil)
 	if err != nil {
@@ -414,13 +471,13 @@ func (p *Provider) downloadSnapshot(ctx context.Context, snapshotID string, targ
 	}
 	var rows []map[string]any
 	if err := json.Unmarshal(body, &rows); err == nil {
-		return p.mapDatasetRows(rows, target), nil
+		return rows, nil
 	}
 	var wrapped struct {
 		Data []map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal(body, &wrapped); err == nil && wrapped.Data != nil {
-		return p.mapDatasetRows(wrapped.Data, target), nil
+		return wrapped.Data, nil
 	}
 	return nil, fmt.Errorf("%w: bright data snapshot returned unrecognized JSON: %s", providers.ErrUnavailable, truncate(string(body), 300))
 }
@@ -652,6 +709,131 @@ func (p *Provider) mapDatasetRows(rows []map[string]any, target models.Collectio
 		items = append(items, item)
 	}
 	return items
+}
+
+// enrichAuthorsWithProfiles merges richer account metadata from the dedicated X profiles dataset
+// into authors discovered from the posts dataset. It is best-effort and never fails collection.
+func (p *Provider) enrichAuthorsWithProfiles(ctx context.Context, items []models.SourceItem) {
+	if p.profilesDatasetID == "" || len(items) == 0 {
+		return
+	}
+	inputs := make([]map[string]any, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		handle := strings.TrimPrefix(strings.TrimSpace(item.Author.Handle), "@")
+		if handle == "" {
+			continue
+		}
+		lower := strings.ToLower(handle)
+		if seen[lower] {
+			continue
+		}
+		seen[lower] = true
+		inputs = append(inputs, map[string]any{
+			"url":      "https://x.com/" + handle,
+			"username": handle,
+			"handle":   handle,
+		})
+	}
+	if len(inputs) == 0 {
+		return
+	}
+	rows, err := p.triggerDatasetRows(ctx, p.profilesDatasetID, inputs, 0.01)
+	if err != nil {
+		return
+	}
+	profiles := mapProfiles(rows)
+	for i := range items {
+		handle := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(items[i].Author.Handle), "@"))
+		if handle == "" {
+			continue
+		}
+		profile, ok := profiles[handle]
+		if !ok {
+			continue
+		}
+		mergeAccountProfile(&items[i].Author, profile)
+		items[i].Author.InfluenceScore = influence(items[i].Author.FollowersCount, items[i].Author.Verified)
+		items[i].Author.BotLikelihood = botLikelihood(items[i].Author, items[i].Text)
+		items[i].Author.ReliabilityScore = 1 - items[i].Author.BotLikelihood
+		items[i].Author.AccountType = accountType(items[i].Author)
+	}
+}
+
+func mergeAccountProfile(dst *models.AccountProfile, src models.AccountProfile) {
+	if dst == nil {
+		return
+	}
+	if dst.AccountID == "" {
+		dst.AccountID = src.AccountID
+	}
+	if dst.DisplayName == "" {
+		dst.DisplayName = src.DisplayName
+	}
+	if dst.Bio == "" {
+		dst.Bio = src.Bio
+	}
+	if dst.DeclaredLocation == "" {
+		dst.DeclaredLocation = src.DeclaredLocation
+	}
+	if dst.ProfileURL == nil && src.ProfileURL != nil {
+		dst.ProfileURL = src.ProfileURL
+	}
+	if dst.FollowersCount <= 0 {
+		dst.FollowersCount = src.FollowersCount
+	}
+	if dst.FollowingCount <= 0 {
+		dst.FollowingCount = src.FollowingCount
+	}
+	if dst.CreatedAtPlatform == nil && src.CreatedAtPlatform != nil {
+		dst.CreatedAtPlatform = src.CreatedAtPlatform
+	}
+	if !dst.Verified {
+		dst.Verified = src.Verified
+	}
+	if len(dst.KnownAffiliations) == 0 && len(src.KnownAffiliations) > 0 {
+		dst.KnownAffiliations = src.KnownAffiliations
+	}
+}
+
+func mapProfiles(rows []map[string]any) map[string]models.AccountProfile {
+	out := map[string]models.AccountProfile{}
+	for _, row := range rows {
+		handle := strings.TrimPrefix(stringField(
+			row,
+			"username",
+			"handle",
+			"user_handle",
+			"screen_name",
+			"author_handle",
+		), "@")
+		if handle == "" {
+			if fromURL, ok := handleFromTweetURL(stringField(row, "url", "profile_url")); ok {
+				handle = fromURL
+			}
+		}
+		if handle == "" {
+			continue
+		}
+		lower := strings.ToLower(handle)
+		profileURL := "https://x.com/" + handle
+		account := models.AccountProfile{
+			AccountID:         firstNonEmptyString(stringField(row, "user_id", "author_id", "account_id"), "x:"+lower),
+			Platform:          "x",
+			Handle:            handle,
+			DisplayName:       stringField(row, "name", "display_name", "author_name", "full_name"),
+			ProfileURL:        &profileURL,
+			Bio:               stringField(row, "biography", "bio", "description"),
+			DeclaredLocation:  stringField(row, "location", "user_location"),
+			FollowersCount:    int64Field(row, "followers", "followers_count"),
+			FollowingCount:    int64Field(row, "following", "following_count", "friends_count"),
+			CreatedAtPlatform: parseAnyTime(stringField(row, "created_at", "date_created", "joined_at")),
+			Verified:          boolField(row, "is_verified", "verified"),
+			KnownAffiliations: stringSliceField(row, "organizations", "entities", "affiliations"),
+		}
+		out[lower] = account
+	}
+	return out
 }
 
 func sourceItemToResult(item models.SourceItem) models.SourceResult {

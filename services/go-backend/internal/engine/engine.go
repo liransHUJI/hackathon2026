@@ -162,6 +162,15 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 		}
 	}
 	sources = dedupeSources(sources)
+	return e.processSources(ctx, campaign, sources, failures, true)
+}
+
+// processSources runs the shared discovery pipeline (clustering, committee assessment, interaction
+// harvesting, actor classification, snapshot) over an already-collected source set. useProvider
+// controls whether additional interactions are fetched from live providers; seeded/offline runs
+// pass false so only in-cluster siblings are classified.
+func (e *Engine) processSources(ctx context.Context, campaign *models.CampaignProfile, sources []models.SourceItem, failures []models.ProviderFailure, useProvider bool) (models.DiscoveryRunResponse, error) {
+	campaignID := campaign.CampaignID
 	if err := e.store.SaveSourceItems(ctx, campaignID, sources); err != nil {
 		return models.DiscoveryRunResponse{}, err
 	}
@@ -182,6 +191,9 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 		}
 		narratives = append(narratives, candidates[idx])
 	}
+	// Persisted narratives are tracked separately so the final snapshot reflects only what actually
+	// reached the store, even if the run is cut short by the discovery deadline.
+	persisted := make([]models.NarrativeCluster, 0, len(narratives))
 	totalInteractions := 0
 	for idx := range narratives {
 		interactionTarget := campaign.CrawlBudget.InteractionsPerNarrative
@@ -189,30 +201,38 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 			interactionTarget = e.cfg.InteractionsPerNarrative
 		}
 		narrativeSources := sourcesForNarrative(narratives[idx], sources)
-		interactions, interactionFailures := e.harvestInteractions(ctx, narrativeSources, interactionTarget)
+		interactions, interactionFailures := e.harvestInteractions(ctx, narrativeSources, interactionTarget, useProvider)
 		failures = append(failures, interactionFailures...)
-		totalInteractions += len(interactions)
 		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions)
 		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
 		// The narrative row must exist before interactions/classifications reference it via FK.
+		// Save failures (e.g. a cancelled context near the deadline) are non-fatal: we skip this
+		// narrative and still finalize the snapshot/status for everything harvested so far.
 		if err := e.store.SaveNarrative(ctx, narratives[idx]); err != nil {
-			return models.DiscoveryRunResponse{}, err
+			failures = append(failures, failure("persistence", err))
+			break
 		}
 		if err := e.store.SaveInteractions(ctx, campaignID, narratives[idx].NarrativeID, interactions); err != nil {
-			return models.DiscoveryRunResponse{}, err
+			failures = append(failures, failure("persistence", err))
 		}
 		if err := e.store.SaveActorClassifications(ctx, classifications); err != nil {
-			return models.DiscoveryRunResponse{}, err
+			failures = append(failures, failure("persistence", err))
 		}
 		for _, alert := range alertsForNarrative(narratives[idx]) {
 			if err := e.store.SaveAlert(ctx, alert); err != nil {
-				return models.DiscoveryRunResponse{}, err
+				failures = append(failures, failure("persistence", err))
 			}
 		}
+		totalInteractions += len(interactions)
+		persisted = append(persisted, narratives[idx])
 	}
-	snapshot := e.snapshot(campaignID, narratives, failures)
-	if err := e.store.SaveDashboardSnapshot(ctx, snapshot); err != nil {
-		return models.DiscoveryRunResponse{}, err
+	// Finalize on a detached context so the dashboard snapshot and campaign status are always
+	// written, even when the discovery context has already hit its deadline mid-crawl.
+	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelFinish()
+	snapshot := e.snapshot(campaignID, persisted, failures)
+	if err := e.store.SaveDashboardSnapshot(finishCtx, snapshot); err != nil {
+		failures = append(failures, failure("persistence", err))
 	}
 	status := models.EngineStatusCompleted
 	message := "discovery completed"
@@ -220,15 +240,15 @@ func (e *Engine) RunDiscovery(ctx context.Context, campaignID string) (models.Di
 		status = models.EngineStatusDegraded
 		message = "discovery completed with provider degradation"
 	}
-	if len(narratives) == 0 {
+	if len(persisted) == 0 {
 		status = models.EngineStatusInsufficientData
 		message = "no narratives could be discovered from live providers"
 	}
-	_ = e.store.MarkCampaignRunCompleted(ctx, campaignID, status)
+	_ = e.store.MarkCampaignRunCompleted(finishCtx, campaignID, status)
 	return models.DiscoveryRunResponse{
 		CampaignID:       campaignID,
 		Status:           status,
-		NarrativesFound:  len(narratives),
+		NarrativesFound:  len(persisted),
 		SourcesCollected: len(sources),
 		Interactions:     totalInteractions,
 		ProviderFailures: failures,
@@ -244,11 +264,26 @@ func (e *Engine) collectionTargets(campaign models.CampaignProfile) []models.Col
 	for _, group := range campaign.InterestGroups {
 		queries = append(queries, group.Keywords...)
 		queries = append(queries, group.Hashtags...)
+		queries = append(queries, group.Issues...)
 	}
+	// Always steer collection toward inauthentic-traction discovery by expanding each campaign
+	// with bot/AI-coordination intent variants. This keeps harvesting real while biasing retrieval
+	// toward narratives where our core differentiation (authentic vs inauthentic traction) matters.
+	queries = append(queries, botIntentQueryVariants(campaign, queries)...)
 	queries = dedupeStrings(queries)
 	max := campaign.CrawlBudget.MaxCollectionResults
 	if max <= 0 {
 		max = e.cfg.DefaultTopNarratives * 50
+	}
+	weightedTotal := 0
+	for _, query := range queries {
+		if strings.TrimSpace(query) == "" {
+			continue
+		}
+		weightedTotal += queryWeight(query)
+	}
+	if weightedTotal <= 0 {
+		weightedTotal = maxInt(1, len(queries))
 	}
 	targets := []models.CollectionTarget{}
 	for _, query := range queries {
@@ -262,12 +297,95 @@ func (e *Engine) collectionTargets(campaign models.CampaignProfile) []models.Col
 			CampaignID: campaign.CampaignID,
 			Query:      query,
 			Source:     "x",
-			MaxResults: max / maxInt(1, len(queries)),
+			// Bot/AI-intent queries get a larger share of retrieval budget.
+			MaxResults: maxInt(10, (max*queryWeight(query))/weightedTotal),
 			Languages:  campaign.Languages,
 			Region:     campaign.Region,
 		})
 	}
 	return targets
+}
+
+func botIntentQueryVariants(campaign models.CampaignProfile, seedQueries []string) []string {
+	templates := []string{
+		`%s bot network`,
+		`%s coordinated inauthentic behavior`,
+		`%s astroturf campaign`,
+		`%s ai-generated propaganda`,
+		`%s deepfake amplification`,
+		`%s disinformation amplification`,
+		`%s troll farm`,
+	}
+	variants := []string{}
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			variants = append(variants, v)
+		}
+	}
+	for _, base := range seedQueries {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			continue
+		}
+		if hasBotIntent(base) {
+			add(base)
+			continue
+		}
+		for _, tmpl := range templates {
+			add(fmt.Sprintf(tmpl, base))
+		}
+	}
+	for _, topic := range campaign.MonitoredTopics {
+		if strings.TrimSpace(topic) != "" {
+			add(topic + " synthetic engagement")
+			add(topic + " coordinated amplification")
+		}
+	}
+	return variants
+}
+
+func queryWeight(query string) int {
+	if hasBotIntent(query) {
+		return 4
+	}
+	return 1
+}
+
+func hasBotIntent(query string) bool {
+	lower := strings.ToLower(query)
+	indicators := []string{
+		"bot", "botnet", "coordinated inauthentic", "inauthentic", "astroturf",
+		"troll farm", "synthetic engagement", "ai-generated", "ai generated",
+		"deepfake", "disinformation", "influence operation", "manipulation campaign",
+	}
+	for _, marker := range indicators {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func campaignTargetsBotAmplification(campaign models.CampaignProfile) bool {
+	for _, v := range campaign.MonitoredTopics {
+		if hasBotIntent(v) {
+			return true
+		}
+	}
+	for _, g := range campaign.InterestGroups {
+		for _, v := range g.Keywords {
+			if hasBotIntent(v) {
+				return true
+			}
+		}
+		for _, v := range g.Issues {
+			if hasBotIntent(v) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []models.SourceItem) []models.NarrativeCluster {
@@ -348,7 +466,7 @@ func (e *Engine) discoverNarratives(campaign models.CampaignProfile, sources []m
 	return narratives
 }
 
-func (e *Engine) harvestInteractions(ctx context.Context, sources []models.SourceItem, target int) ([]models.InteractionEvent, []models.ProviderFailure) {
+func (e *Engine) harvestInteractions(ctx context.Context, sources []models.SourceItem, target int, useProvider bool) ([]models.InteractionEvent, []models.ProviderFailure) {
 	interactions := []models.InteractionEvent{}
 	failures := []models.ProviderFailure{}
 	if len(sources) == 0 {
@@ -392,7 +510,7 @@ func (e *Engine) harvestInteractions(ctx context.Context, sources []models.Sourc
 
 	// 2. Fetch additional conversation (replies/quotes/reposts) for the origin from the live
 	//    provider, bounded by the remaining interaction budget.
-	if remaining := target - len(interactions); remaining > 0 && origin.Provider != "" {
+	if remaining := target - len(interactions); useProvider && remaining > 0 && origin.Provider != "" {
 		for _, provider := range e.registry.CampaignProviders() {
 			if provider.ID() != origin.Provider {
 				continue
@@ -473,6 +591,17 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	for _, interaction := range interactions {
 		byAccount[interaction.AccountID] = append(byAccount[interaction.AccountID], interaction)
 	}
+	// Detect coordinated inauthentic behavior across the narrative's interaction set (near-duplicate
+	// copy shared by multiple distinct accounts), then fold it into each account's profile so the
+	// bot scorer can flag amplification networks.
+	coordination := computeCoordination(interactions)
+	botThreshold := 0.65
+	// For campaigns explicitly focused on inauthentic amplification, bias toward recall: we still
+	// classify from real account behavior, but use a lower cut-off so suspicious actors are not
+	// hidden behind an overly conservative threshold.
+	if campaignTargetsBotAmplification(campaign) {
+		botThreshold = 0.5
+	}
 	classifications := []models.ActorClassification{}
 	now := time.Now().UTC()
 	for accountID, accountInteractions := range byAccount {
@@ -480,9 +609,12 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 		if account.AccountID == "" {
 			account = models.AccountProfile{AccountID: accountID, Platform: "x", Handle: accountID}
 		}
+		if c := coordination[accountID]; c > account.CoordinationScore {
+			account.CoordinationScore = c
+		}
 		score, evidence := scoring.ActorBotScore(account, accountInteractions)
 		class := models.ActorClassNonBot
-		if score >= 0.65 {
+		if score >= botThreshold || account.CoordinationScore >= 0.6 {
 			class = models.ActorClassBot
 		}
 		classifications = append(classifications, models.ActorClassification{

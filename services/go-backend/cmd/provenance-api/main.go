@@ -56,7 +56,13 @@ func main() {
 	defer natsClient.Close()
 
 	registry := providers.NewRegistry()
-	registry.Register(brightdata.NewXWithDataset(cfg.BrightDataAPIKey, cfg.BrightDataXDatasetID, cfg.BrightDataSERPZone, cfg.BrightDataBudgetUSD))
+	registry.Register(brightdata.NewXWithDatasets(
+		cfg.BrightDataAPIKey,
+		cfg.BrightDataXDatasetID,
+		cfg.BrightDataXProfilesDatasetID,
+		cfg.BrightDataSERPZone,
+		cfg.BrightDataBudgetUSD,
+	))
 	registry.Register(brightdata.NewWebWithUnlocker(cfg.BrightDataAPIKey, cfg.BrightDataUnlockerZone, cfg.BrightDataSERPZone, cfg.BrightDataBudgetUSD))
 	registry.Register(basicweb.New(cfg.BasicWebDomainRPS))
 
