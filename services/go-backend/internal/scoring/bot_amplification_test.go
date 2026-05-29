@@ -71,6 +71,36 @@ func TestActorBotScoreFlagsLowReachAmplifiers(t *testing.T) {
 	}
 }
 
+func TestFilterClassificationsDropsMegaOrganic(t *testing.T) {
+	accounts := map[string]models.AccountProfile{
+		"mega": {AccountID: "mega", Handle: "@CNN", FollowersCount: 15_000_000, Verified: true, Bio: "Breaking news from around the world"},
+		"bot1": {AccountID: "bot1", Handle: "@user48291", FollowersCount: 12},
+		"bot2": {AccountID: "bot2", Handle: "@amp12345", FollowersCount: 89},
+	}
+	classifications := []models.ActorClassification{
+		{AccountID: "mega", Class: models.ActorClassNonBot, BotScore: 0.05},
+		{AccountID: "bot1", Class: models.ActorClassBot, BotScore: 0.72},
+		{AccountID: "bot2", Class: models.ActorClassBot, BotScore: 0.68},
+	}
+	filtered := FilterClassificationsForAmplificationPool(classifications, accounts)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 amplification actors, got %d", len(filtered))
+	}
+	_, inauth, _ := AuthenticityPercentagesHighRecall(filtered)
+	if inauth < 90 {
+		t.Fatalf("expected high inauthentic %% after dropping mega organic, got %.1f", inauth)
+	}
+}
+
+func TestIsObviousOrganicMegaAccount(t *testing.T) {
+	if !IsObviousOrganicMegaAccount(models.AccountProfile{FollowersCount: 2_000_000, Verified: true}) {
+		t.Fatal("expected mega verified to be organic")
+	}
+	if IsObviousOrganicMegaAccount(models.AccountProfile{FollowersCount: 300, Handle: "@amp99"}) {
+		t.Fatal("expected low-reach to stay in pool")
+	}
+}
+
 func TestHashtagDominated(t *testing.T) {
 	cases := []struct {
 		text string

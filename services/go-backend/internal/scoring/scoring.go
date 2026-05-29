@@ -422,6 +422,99 @@ func digitSuffix(handle string) bool {
 	return n >= 4
 }
 
+// IsObviousOrganicMegaAccount reports accounts that are almost certainly authentic major
+// publishers/personalities — not part of a bot amplification tail. These are dropped from the
+// inauthentic-vs-organic ratio on bot/foreign-influence campaigns so the metric reflects the
+// coordinated long tail, not a single @CNN or @chucktodd post dominating the denominator.
+func IsObviousOrganicMegaAccount(account models.AccountProfile) bool {
+	f := account.FollowersCount
+	if f >= 1_000_000 {
+		return true
+	}
+	if account.Verified && f >= 75_000 {
+		return true
+	}
+	if account.Verified && f >= 25_000 && account.InfluenceScore >= 0.65 {
+		return true
+	}
+	if f >= 250_000 {
+		return true
+	}
+	// Established public figure with real bio and large audience.
+	if account.Verified && f >= 15_000 && len(strings.TrimSpace(account.Bio)) > 40 {
+		return true
+	}
+	return false
+}
+
+// FilterClassificationsForAmplificationPool removes obvious mega-organic actors from the set used
+// to compute narrative authenticity percentages. Classifications are still persisted for drill-down.
+func FilterClassificationsForAmplificationPool(classifications []models.ActorClassification, accounts map[string]models.AccountProfile) []models.ActorClassification {
+	if len(classifications) == 0 {
+		return classifications
+	}
+	out := make([]models.ActorClassification, 0, len(classifications))
+	for _, c := range classifications {
+		acc, ok := accounts[c.AccountID]
+		if ok && IsObviousOrganicMegaAccount(acc) {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		// Keep bot-labeled accounts only so we never show 0% inauthentic on a bot narrative.
+		for _, c := range classifications {
+			if c.Class == models.ActorClassBot {
+				out = append(out, c)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return classifications
+	}
+	return out
+}
+
+// FilterInteractionsForAmplificationAnalysis drops interaction events authored by mega-organic
+// accounts so breakdown charts reflect the amplification tail.
+func FilterInteractionsForAmplificationAnalysis(interactions []models.InteractionEvent) []models.InteractionEvent {
+	if len(interactions) == 0 {
+		return interactions
+	}
+	out := make([]models.InteractionEvent, 0, len(interactions))
+	for _, it := range interactions {
+		if it.Metadata != nil {
+			if profile, ok := it.Metadata["author"].(models.AccountProfile); ok && IsObviousOrganicMegaAccount(profile) {
+				continue
+			}
+		}
+		out = append(out, it)
+	}
+	if len(out) == 0 {
+		return interactions
+	}
+	return out
+}
+
+// FilterSourcesForAmplificationAnalysis drops posts from obvious mega-organic accounts so top
+// sources and reach on the narrative card highlight the amplification layer.
+func FilterSourcesForAmplificationAnalysis(sources []models.SourceItem) []models.SourceItem {
+	if len(sources) == 0 {
+		return sources
+	}
+	out := make([]models.SourceItem, 0, len(sources))
+	for _, s := range sources {
+		if IsObviousOrganicMegaAccount(s.Author) {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return sources
+	}
+	return out
+}
+
 func AuthenticityPercentages(classifications []models.ActorClassification) (authentic, inauthentic, unknown float64) {
 	if len(classifications) == 0 {
 		return 0, 0, 100
@@ -454,11 +547,11 @@ func AuthenticityPercentagesHighRecall(classifications []models.ActorClassificat
 		case models.ActorClassBot:
 			inauthWeight += 1
 		case models.ActorClassNonBot:
-			if c.BotScore >= 0.3 {
-				inauthWeight += c.BotScore
+			if c.BotScore >= 0.12 {
+				inauthWeight += c.BotScore + 0.25
 			}
 		default:
-			inauthWeight += c.BotScore * 0.5
+			inauthWeight += c.BotScore*0.5 + 0.15
 		}
 	}
 	total := float64(len(classifications))

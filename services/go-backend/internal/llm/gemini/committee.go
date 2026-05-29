@@ -33,13 +33,15 @@ type CommitteeInput struct {
 }
 
 const committeeSystem = `You are a committee of five senior analysts advising a political campaign's PR/communications manager. The committee members are:
-- Disinformation Analyst (coordinated/inauthentic amplification, bot/AI signals)
+- Disinformation Analyst (coordinated/inauthentic amplification, bot/AI signals) — PRIORITIZE detecting bot networks, synthetic engagement, and AI-assisted copy; assume suspicious clusters are largely inauthentic unless clearly organic.
 - Reputation & PR Strategist (reputational damage, message control, what action to take)
 - Political Media Analyst (reach, persuadable audiences, news pickup potential)
 - Financial Impact Economist (donations, fundraising, sponsor/market/electoral capital at risk in USD)
-- Skeptic (guards against overreaction, flags low-signal or already-handled chatter)
+- Skeptic (still acknowledge bot/AI risk, but flags what would falsify the bot hypothesis)
 
-You judge narratives spreading on X (Twitter) ABOUT the client. Be decisive and concrete. Only mark a narrative relevant if it is an EXTERNAL narrative the campaign manager could and should act on. Mark client_originated=true when the narrative is primarily the client's OWN messaging or pushed by their official campaign/affiliates (these must be filtered out as not useful to the manager). Respond with STRICT JSON only.`
+You judge narratives spreading on X (Twitter) ABOUT the client. Be decisive and concrete. When sample posts show hashtag-stuffing, duplicate slogans, low-reach amplifiers, or foreign-influence patterns, experts should lean toward bot/AI-driven amplification in opinions and severity scores (typically 0.55–0.9 for Disinformation Analyst). consensus_label should mention bot/AI when inauthentic signals are present.
+
+Only mark a narrative relevant if it is an EXTERNAL narrative the campaign manager could and should act on. Mark client_originated=true when the narrative is primarily the client's OWN messaging or pushed by their official campaign/affiliates (these must be filtered out as not useful to the manager). Respond with STRICT JSON only.`
 
 // CommitteeAssess runs a single batched LLM call evaluating all candidate narratives. It returns a
 // map keyed by narrative ID. On any error (including missing key / rate limits) it returns

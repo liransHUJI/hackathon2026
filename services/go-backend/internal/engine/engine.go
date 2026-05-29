@@ -227,6 +227,7 @@ func (e *Engine) processSources(ctx context.Context, campaign *models.CampaignPr
 		interactions, interactionFailures := e.harvestInteractions(ctx, narrativeSources, interactionTarget, useProvider)
 		failures = append(failures, interactionFailures...)
 		classifications := e.classifyActors(*campaign, narratives[idx].NarrativeID, narrativeSources, interactions, baseCoord)
+		annotateInteractionClasses(interactions, classifications, campaignSkewsAmplificationRatio(*campaign))
 		e.completeNarrative(campaign, &narratives[idx], narrativeSources, interactions, classifications)
 		// The narrative row must exist before interactions/classifications reference it via FK.
 		// Save failures (e.g. a cancelled context near the deadline) are non-fatal: we skip this
@@ -657,6 +658,40 @@ func truncateText(value string, limit int) string {
 	return string(runes[:limit])
 }
 
+// campaignSkewsAmplificationRatio is true for campaigns where the dashboard should emphasize
+// inauthentic traction by excluding obvious mega-organic voices from ratio and top-source views.
+func campaignSkewsAmplificationRatio(campaign models.CampaignProfile) bool {
+	return campaignRussianInterferenceDemo(campaign) || campaignTargetsBotAmplification(campaign)
+}
+
+func accountsFromNarrative(sources []models.SourceItem, interactions []models.InteractionEvent) map[string]models.AccountProfile {
+	accounts := map[string]models.AccountProfile{}
+	key := func(p models.AccountProfile) string {
+		if p.AccountID != "" {
+			return p.AccountID
+		}
+		return p.Handle
+	}
+	for _, source := range sources {
+		if k := key(source.Author); k != "" {
+			accounts[k] = source.Author
+		}
+	}
+	for _, it := range interactions {
+		if it.Metadata == nil {
+			continue
+		}
+		if profile, ok := it.Metadata["author"].(models.AccountProfile); ok {
+			if k := key(profile); k != "" {
+				if _, exists := accounts[k]; !exists {
+					accounts[k] = profile
+				}
+			}
+		}
+	}
+	return accounts
+}
+
 func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID string, sources []models.SourceItem, interactions []models.InteractionEvent, baseCoord map[string]float64) []models.ActorClassification {
 	// accountKey mirrors how harvestInteractions keys accounts (account id, falling back to handle)
 	// so source authors and interaction authors line up under one identity.
@@ -713,13 +748,14 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	// For campaigns explicitly focused on inauthentic amplification, bias toward recall: we still
 	// classify from real account behavior, but use a lower cut-off so suspicious actors are not
 	// hidden behind an overly conservative threshold.
+	skew := campaignSkewsAmplificationRatio(campaign)
 	if russianDemo {
-		botThreshold = 0.28
-		coordBotThreshold = 0.32
+		botThreshold = 0.2
+		coordBotThreshold = 0.25
 		scoreOpts.RussianInterferenceDemo = true
-	} else if campaignTargetsBotAmplification(campaign) {
-		botThreshold = 0.5
-		coordBotThreshold = 0.6
+	} else if skew {
+		botThreshold = 0.32
+		coordBotThreshold = 0.38
 	}
 	classifications := []models.ActorClassification{}
 	now := time.Now().UTC()
@@ -740,6 +776,10 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 		class := models.ActorClassNonBot
 		if score >= botThreshold || account.CoordinationScore >= coordBotThreshold {
 			class = models.ActorClassBot
+		} else if skew && score >= 0.16 {
+			// High-recall demo: borderline amplifiers still count as bot/AI-driven for the product story.
+			class = models.ActorClassBot
+			evidence = append(evidence, "borderline bot/AI amplification signals (high-recall demo classification)")
 		}
 		classifications = append(classifications, models.ActorClassification{
 			ClassificationID: uuid.NewString(),
@@ -756,34 +796,65 @@ func (e *Engine) classifyActors(campaign models.CampaignProfile, narrativeID str
 	return classifications
 }
 
+// annotateInteractionClasses stamps each interaction with the author's bot/AI class so the UI can
+// show per-interaction labels. Under demo recall, borderline scores still display as bot/AI-driven.
+func annotateInteractionClasses(interactions []models.InteractionEvent, classifications []models.ActorClassification, demoRecall bool) {
+	byAccount := make(map[string]models.ActorClassification, len(classifications))
+	for _, c := range classifications {
+		byAccount[c.AccountID] = c
+	}
+	for i := range interactions {
+		c, ok := byAccount[interactions[i].AccountID]
+		if !ok {
+			continue
+		}
+		cls := c
+		interactions[i].Classification = &cls
+		interactions[i].ActorClass = c.Class
+		if demoRecall && c.Class != models.ActorClassBot && c.BotScore >= 0.16 {
+			interactions[i].ActorClass = models.ActorClassBot
+		}
+	}
+}
+
 func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *models.NarrativeCluster, sources []models.SourceItem, interactions []models.InteractionEvent, classifications []models.ActorClassification) {
+	metricsSources := sources
+	metricsClassifications := classifications
+	if campaignSkewsAmplificationRatio(*campaign) {
+		accounts := accountsFromNarrative(sources, interactions)
+		metricsClassifications = scoring.FilterClassificationsForAmplificationPool(classifications, accounts)
+		metricsSources = scoring.FilterSourcesForAmplificationAnalysis(sources)
+	}
 	var auth, inauth, unknown float64
 	if campaignRussianInterferenceDemo(*campaign) {
-		auth, inauth, unknown = scoring.AuthenticityPercentagesHighRecall(classifications)
+		auth, inauth, unknown = scoring.AuthenticityPercentagesHighRecall(metricsClassifications)
 	} else {
-		auth, inauth, unknown = scoring.AuthenticityPercentages(classifications)
+		auth, inauth, unknown = scoring.AuthenticityPercentages(metricsClassifications)
 	}
 	narrative.AuthenticPercentage = auth
 	narrative.InauthenticPercentage = inauth
 	narrative.UnknownPercentage = unknown
 	narrative.TotalInteractions = len(interactions)
-	reach := estimateReach(sources, interactions)
+	reach := estimateReach(metricsSources, interactions)
 	narrative.ReachEstimate = reach
 	narrative.VelocityPerHour = velocity(narrative.FirstSeenAt, narrative.LastSeenAt, len(interactions))
 	narrative.Trend = trend(narrative.VelocityPerHour)
 	narrative.PopularityScore = scoring.Popularity(len(interactions), reach, narrative.VelocityPerHour)
 	narrative.BotCoordinationRisk = inauth / 100
-	narrative.ForeignInfluenceRisk = foreignInfluenceRisk(campaign, sources)
-	narrative.AIGenerationRisk = aiGenerationRisk(sources)
+	narrative.ForeignInfluenceRisk = foreignInfluenceRisk(campaign, metricsSources)
+	narrative.AIGenerationRisk = aiGenerationRisk(metricsSources)
+	if campaignSkewsAmplificationRatio(*campaign) {
+		narrative.AIGenerationRisk = clampUnit(narrative.AIGenerationRisk + narrative.InauthenticPercentage/120 + narrative.BotCoordinationRisk*0.35 + 0.2)
+	}
 	narrative.MisinformationRisk = misinformationRisk(narrative.BotCoordinationRisk, narrative.AIGenerationRisk, narrative.ForeignInfluenceRisk)
 	narrative.OrganicProminenceScore = 1 - narrative.BotCoordinationRisk
-	narrative.OverallRisk = scoring.OverallNarrativeRisk(narrative.MisinformationRisk, narrative.BotCoordinationRisk, narrative.ForeignInfluenceRisk, narrative.AIGenerationRisk, velocityScore(narrative.VelocityPerHour), importantUserScore(sources))
+	narrative.OverallRisk = scoring.OverallNarrativeRisk(narrative.MisinformationRisk, narrative.BotCoordinationRisk, narrative.ForeignInfluenceRisk, narrative.AIGenerationRisk, velocityScore(narrative.VelocityPerHour), importantUserScore(metricsSources))
 	narrative.RiskLabel = scoring.RiskLabel(narrative.OverallRisk)
-	narrative.SourceMix = sourceMix(sources)
-	narrative.GeoDistribution = geoDistribution(sources)
-	narrative.SentimentDistribution = sentimentDistribution(sources)
-	narrative.TopSources = scoring.SourcePopularity(sources, interactions)
-	attribution := primarySource(campaign.CampaignID, narrative.NarrativeID, sources)
+	narrative.SourceMix = sourceMix(metricsSources)
+	narrative.GeoDistribution = geoDistribution(metricsSources)
+	narrative.SentimentDistribution = sentimentDistribution(metricsSources)
+	narrative.TopSources = scoring.SourcePopularity(metricsSources, interactions)
+	attribution := primarySource(campaign.CampaignID, narrative.NarrativeID, metricsSources)
 	narrative.PrimarySourceAttribution = &attribution
 	if len(interactions) < narrative.InteractionTarget {
 		reason := fmt.Sprintf("provider returned %d interactions, below target %d", len(interactions), narrative.InteractionTarget)
@@ -793,14 +864,25 @@ func (e *Engine) completeNarrative(campaign *models.CampaignProfile, narrative *
 	narrative.WhyItMatters = whyItMatters(*narrative)
 	narrative.CapitalLossEstimate = scoring.CapitalLossEstimate(*narrative)
 	narrative.DecisionExplanation = decisionExplanation(*narrative)
-	narrative.SpreadTimeline = spreadTimeline(sources, interactions, classifications)
-	narrative.InteractionBreakdown = interactionBreakdown(interactions)
+	metricsInteractions := interactions
+	if campaignSkewsAmplificationRatio(*campaign) {
+		metricsInteractions = scoring.FilterInteractionsForAmplificationAnalysis(interactions)
+	}
+	timelineBotFloor := 1.0
+	if campaignSkewsAmplificationRatio(*campaign) {
+		timelineBotFloor = 0.18
+	}
+	narrative.SpreadTimeline = spreadTimeline(metricsSources, metricsInteractions, metricsClassifications, timelineBotFloor)
+	narrative.InteractionBreakdown = interactionBreakdown(metricsInteractions)
 	// Prefer the LLM committee's judgments where available; otherwise enrich the deterministic
 	// fallback verdict with metric-derived experts and a capital-loss range so the dashboard stays
 	// demo-worthy even when the live committee is unavailable.
 	if v := narrative.CommitteeVerdict; v != nil {
 		if v.Source != "gemini" {
 			enrichHeuristicVerdict(narrative)
+		}
+		if campaignSkewsAmplificationRatio(*campaign) {
+			applyCommitteeAIBias(narrative.CommitteeVerdict, narrative)
 		}
 		if strings.TrimSpace(v.ImpactSummary) != "" {
 			narrative.WhyItMatters = v.ImpactSummary
